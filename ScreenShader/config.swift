@@ -1,5 +1,25 @@
 import AppKit
 
+/// Shader language types supported by ScreenShader
+enum ShaderLanguage: String, Codable, CaseIterable {
+    case metal = "metal"
+    case slang = "slang"
+    
+    var displayName: String {
+        switch self {
+        case .metal: return "Metal"
+        case .slang: return "Slang"
+        }
+    }
+    
+    var fileExtension: String {
+        switch self {
+        case .metal: return "metal"
+        case .slang: return "slang"
+        }
+    }
+}
+
 let defaultShaderSource: String = """
   /**************************************************************
 
@@ -34,6 +54,49 @@ let defaultShaderSource: String = """
   float4 shaderFunction(ShaderInput in) {
     constexpr sampler s(address::clamp_to_edge, filter::linear);
     float4 inputColor = in.inputTexture.sample(s, in.texCoord);
+
+    float4 resultColor = float4(
+      inputColor.r,
+      inputColor.g,
+      inputColor.b,
+      inputColor.a
+    );
+
+    return resultColor;
+  }
+  """
+
+let defaultSlangShaderSource: String = """
+  /**************************************************************
+
+  These are the inputs provided to the shader (Slang version):
+
+  struct ShaderInput {
+    // The texture coordinates for indexing into the input at the current
+    // position. The origin is at the top left of the screen.
+    float2 texCoord;
+    // The current position in pixels, with (0,0) at the bottom left of the
+    // screen.
+    float2 screenPosition;
+    // The screen size in pixels.
+    float2 screenSize;
+    // The current position of the mouse cursor in pixels, with (0,0) at
+    // the bottom left of the screen.
+    float2 mousePosition;
+    // The elapsed time since the system started in seconds.
+    float time;
+  };
+
+  Available functions:
+    float4 sampleInput(float2 texCoord) - Sample the input screen texture
+    float2 texToScreen(float2 texCoord, float2 screenSize)
+    float2 screenToTex(float2 screenPosition, float2 screenSize)
+
+  **************************************************************/
+
+  // Don't change the name or signature of this function:
+  float4 shaderFunction(ShaderInput input) {
+    float4 inputColor = sampleInput(input.texCoord);
 
     float4 resultColor = float4(
       inputColor.r,
@@ -153,6 +216,70 @@ let predefinedShaders: [(String, String)] = [
   ),
 ]
 
+/// Predefined Slang shaders (shader language, name, source)
+let predefinedSlangShaders: [(String, String)] = [
+  (
+    "Swap red-blue channels (Slang)",
+    """
+    float4 shaderFunction(ShaderInput input) {
+      float4 inputColor = sampleInput(input.texCoord);
+      return float4(inputColor.b, inputColor.g, inputColor.r, inputColor.a);
+    }
+    """
+  ),
+  (
+    "Grey scale (Slang)",
+    """
+    float4 shaderFunction(ShaderInput input) {
+      float4 inputColor = sampleInput(input.texCoord);
+      float grey = dot(inputColor.rgb, float3(0.299, 0.587, 0.114));
+      return float4(grey, grey, grey, inputColor.a);
+    }
+    """
+  ),
+  (
+    "Color Invert (Slang)",
+    """
+    float4 shaderFunction(ShaderInput input) {
+      float4 inputColor = sampleInput(input.texCoord);
+      return float4(1.0 - inputColor.rgb, inputColor.a);
+    }
+    """
+  ),
+  (
+    "Sepia Tone (Slang)",
+    """
+    float4 shaderFunction(ShaderInput input) {
+      float4 inputColor = sampleInput(input.texCoord);
+      
+      float3 sepia;
+      sepia.r = dot(inputColor.rgb, float3(0.393, 0.769, 0.189));
+      sepia.g = dot(inputColor.rgb, float3(0.349, 0.686, 0.168));
+      sepia.b = dot(inputColor.rgb, float3(0.272, 0.534, 0.131));
+      
+      return float4(sepia, inputColor.a);
+    }
+    """
+  ),
+  (
+    "Vignette (Slang)",
+    """
+    float4 shaderFunction(ShaderInput input) {
+      float4 inputColor = sampleInput(input.texCoord);
+      
+      // Calculate distance from center
+      float2 center = float2(0.5, 0.5);
+      float dist = distance(input.texCoord, center);
+      
+      // Create vignette effect
+      float vignette = 1.0 - smoothstep(0.3, 0.8, dist);
+      
+      return float4(inputColor.rgb * vignette, inputColor.a);
+    }
+    """
+  ),
+]
+
 class Config: Codable {
   var configVersion: Int = 1
   var effects: Effects = Effects()
@@ -203,10 +330,19 @@ class Config: Codable {
     }
 
     if config.effects.effectList().isEmpty {
+      // Add predefined Metal shaders
       for (name, shader) in predefinedShaders {
-        let effect = config.effects.new()
+        let effect = config.effects.new(language: .metal)
         config.effects.setName(effect: effect, newName: name)
         config.effects.setShader(effect: effect, shader: shader)
+      }
+      // Add predefined Slang shaders (only if slangc is available)
+      if SlangCompiler.isAvailable {
+        for (name, shader) in predefinedSlangShaders {
+          let effect = config.effects.new(language: .slang)
+          config.effects.setName(effect: effect, newName: name)
+          config.effects.setShader(effect: effect, shader: shader)
+        }
       }
     }
 
@@ -221,21 +357,52 @@ class Effects: Codable {
   private var effectToName: [UUID: String] = [:]
   private var effectToShader: [UUID: String] = [:]
   private var effectToActive: [UUID: Bool] = [:]
+  private var effectToLanguage: [UUID: ShaderLanguage] = [:]
   private var mostRecentActiveEffect: UUID? = nil
+  
+  // Custom CodingKeys to handle optional effectToLanguage
+  private enum CodingKeys: String, CodingKey {
+    case nextEffectNumber
+    case effects
+    case deletedEffects
+    case effectToName
+    case effectToShader
+    case effectToActive
+    case effectToLanguage
+    case mostRecentActiveEffect
+  }
+  
+  // Default initializer
+  init() {}
+  
+  // Custom decoder to handle missing effectToLanguage in old config files
+  required init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    nextEffectNumber = try container.decode(Int.self, forKey: .nextEffectNumber)
+    effects = try container.decode([UUID].self, forKey: .effects)
+    deletedEffects = try container.decode([UUID].self, forKey: .deletedEffects)
+    effectToName = try container.decode([UUID: String].self, forKey: .effectToName)
+    effectToShader = try container.decode([UUID: String].self, forKey: .effectToShader)
+    effectToActive = try container.decode([UUID: Bool].self, forKey: .effectToActive)
+    // Handle missing effectToLanguage for backwards compatibility
+    effectToLanguage = try container.decodeIfPresent([UUID: ShaderLanguage].self, forKey: .effectToLanguage) ?? [:]
+    mostRecentActiveEffect = try container.decodeIfPresent(UUID.self, forKey: .mostRecentActiveEffect)
+  }
 
   func effectList() -> [UUID] {
     return self.effects
   }
 
-  func new() -> UUID {
+  func new(language: ShaderLanguage = .metal) -> UUID {
     let newEffectID = UUID()
     let newEffectName = "Effect \(self.nextEffectNumber)"
     self.nextEffectNumber += 1
 
     self.effects.append(newEffectID)
     self.effectToName[newEffectID] = newEffectName
-    self.effectToShader[newEffectID] = defaultShaderSource
+    self.effectToShader[newEffectID] = language == .slang ? defaultSlangShaderSource : defaultShaderSource
     self.effectToActive[newEffectID] = false
+    self.effectToLanguage[newEffectID] = language
 
     return newEffectID
   }
@@ -283,6 +450,14 @@ class Effects: Codable {
 
   func setShader(effect: UUID, shader: String) {
     self.effectToShader[effect] = shader
+  }
+
+  func getLanguage(effect: UUID) -> ShaderLanguage {
+    return self.effectToLanguage[effect] ?? .metal
+  }
+
+  func setLanguage(effect: UUID, language: ShaderLanguage) {
+    self.effectToLanguage[effect] = language
   }
 
   func getActiveEffect() -> UUID? {

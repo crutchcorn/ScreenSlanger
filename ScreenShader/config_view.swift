@@ -124,7 +124,9 @@ class ConfigViewController: NSViewController, NSTableViewDelegate, NSTableViewDa
     let effect = self.effects.effectList()[row]
     let name = self.effects.getName(effect: effect)
     let isActive = self.effects.isActive(effect: effect)
-    return isActive ? "\(name) (active)" : name
+    let language = self.effects.getLanguage(effect: effect)
+    let languageTag = language == .slang ? " [Slang]" : ""
+    return isActive ? "\(name)\(languageTag) (active)" : "\(name)\(languageTag)"
   }
 
   func tableViewSelectionDidChange(_ notification: Notification) {

@@ -46,7 +46,20 @@ class MetalRenderer {
     }
   }
 
-  static func buildRenderPipeline(device: MTLDevice, effectSource: String) throws
+  /// Build a render pipeline from Metal shader effect source
+  static func buildRenderPipeline(device: MTLDevice, effectSource: String, language: ShaderLanguage = .metal) throws
+    -> MTLRenderPipelineState
+  {
+    switch language {
+    case .metal:
+      return try buildMetalRenderPipeline(device: device, effectSource: effectSource)
+    case .slang:
+      return try buildSlangRenderPipeline(device: device, effectSource: effectSource)
+    }
+  }
+
+  /// Build a render pipeline from Metal shader effect source
+  private static func buildMetalRenderPipeline(device: MTLDevice, effectSource: String) throws
     -> MTLRenderPipelineState
   {
     let librarySource = """
@@ -143,8 +156,89 @@ class MetalRenderer {
 
     return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
   }
+  
+  /// Build a render pipeline from Slang shader effect source
+  /// This compiles the Slang code to Metal, then builds the pipeline
+  private static func buildSlangRenderPipeline(device: MTLDevice, effectSource: String) throws
+    -> MTLRenderPipelineState
+  {
+    // Wrap the user's effect code in the Slang framework
+    let wrappedSource = SlangCompiler.wrapEffectSource(effectSource)
+    
+    // Compile Slang to Metal shader source
+    let metalFragmentSource: String
+    do {
+      metalFragmentSource = try SlangCompiler.compileToMetal(slangSource: wrappedSource)
+    } catch {
+      throw NSError(
+        domain: "MetalRenderer", code: 3,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Slang compilation failed: \(error.localizedDescription)"
+        ])
+    }
+    
+    // Build the complete Metal library source with the Slang-generated fragment shader
+    // and our standard vertex shader
+    let librarySource = """
+      #include <metal_stdlib>
+      using namespace metal;
+      
+      // ========== Slang-generated fragment shader code ==========
+      \(metalFragmentSource)
+      // ========== End Slang-generated code ==========
+      
+      // Vertex shader (always Metal, as Slang only generates the fragment shader)
+      struct VertexOut {
+        float4 position [[position]];
+        float2 texCoord;
+      };
+      
+      vertex VertexOut vertex_main(uint vertexId [[vertex_id]]) {
+        float2 quadVertices[6] = {
+          float2(-1.0, -1.0),
+          float2( 1.0, -1.0),
+          float2(-1.0,  1.0),
+          float2(-1.0,  1.0),
+          float2( 1.0, -1.0),
+          float2( 1.0,  1.0)
+        };
 
-  func setEffectSource(_ effectSource: String?) throws {
+        VertexOut out;
+        out.position = float4(quadVertices[vertexId], 0.0, 1.0);
+        out.texCoord = float2(
+          (quadVertices[vertexId].x + 1.0) * 0.5,
+          (-quadVertices[vertexId].y + 1.0) * 0.5);
+        return out;
+      }
+      """
+    
+    let library = try device.makeLibrary(source: librarySource, options: nil)
+    
+    let vertexFunction = library.makeFunction(name: "vertex_main")
+    // The Slang-generated fragment function - look for fragmentMain (Slang naming)
+    var fragmentFunction = library.makeFunction(name: "fragmentMain")
+    // Fallback to main if fragmentMain not found (some Slang versions)
+    if fragmentFunction == nil {
+      fragmentFunction = library.makeFunction(name: "main")
+    }
+    
+    guard vertexFunction != nil && fragmentFunction != nil else {
+      throw NSError(
+        domain: "MetalRenderer", code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Could not find vertex_main or fragmentMain in compiled Slang shader."
+        ])
+    }
+    
+    let pipelineDescriptor = MTLRenderPipelineDescriptor()
+    pipelineDescriptor.vertexFunction = vertexFunction
+    pipelineDescriptor.fragmentFunction = fragmentFunction
+    pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    
+    return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
+  }
+
+  func setEffectSource(_ effectSource: String?, language: ShaderLanguage = .metal) throws {
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
       self.renderPipeline = nil
@@ -153,7 +247,7 @@ class MetalRenderer {
     self.activeEffectSource = effectSource
     do {
       self.renderPipeline = try Self.buildRenderPipeline(
-        device: self.device, effectSource: effectSource)
+        device: self.device, effectSource: effectSource, language: language)
     } catch {
       self.renderPipeline = nil
       throw error

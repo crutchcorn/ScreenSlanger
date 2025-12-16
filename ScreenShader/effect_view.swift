@@ -15,6 +15,8 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
   private var stackView: NSStackView! = nil
   private var nameField: NSTextField! = nil
   private var activeButton: NSButton! = nil
+  private var languageLabel: NSTextField! = nil
+  private var languagePopup: NSPopUpButton! = nil
   private var deleteButton: NSButton! = nil
   private var shaderField: NSTextView! = nil
   private var saveButton: NSButton! = nil
@@ -45,6 +47,36 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
     self.activeButton.translatesAutoresizingMaskIntoConstraints = false
     self.activeButton.state = self.effects.isActive(effect: self.effect) ? .on : .off
     self.stackView.addArrangedSubview(self.activeButton)
+    
+    // Shader language selector
+    let languageStack = NSStackView()
+    languageStack.orientation = .horizontal
+    languageStack.spacing = 8
+    languageStack.alignment = .centerY
+    languageStack.translatesAutoresizingMaskIntoConstraints = false
+    
+    self.languageLabel = NSTextField(labelWithString: "Shader Language:")
+    self.languageLabel.translatesAutoresizingMaskIntoConstraints = false
+    languageStack.addArrangedSubview(self.languageLabel)
+    
+    self.languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    self.languagePopup.translatesAutoresizingMaskIntoConstraints = false
+    self.languagePopup.addItems(withTitles: ShaderLanguage.allCases.map { $0.displayName })
+    let currentLanguage = self.effects.getLanguage(effect: self.effect)
+    self.languagePopup.selectItem(withTitle: currentLanguage.displayName)
+    self.languagePopup.target = self
+    self.languagePopup.action = #selector(self.languageChanged)
+    languageStack.addArrangedSubview(self.languagePopup)
+    
+    // Add Slang availability indicator
+    if !SlangCompiler.isAvailable {
+      let warningLabel = NSTextField(labelWithString: "⚠️ slangc not found")
+      warningLabel.textColor = .systemOrange
+      warningLabel.translatesAutoresizingMaskIntoConstraints = false
+      languageStack.addArrangedSubview(warningLabel)
+    }
+    
+    self.stackView.addArrangedSubview(languageStack)
 
     self.deleteButton = NSButton(
       title: "Delete effect",
@@ -96,6 +128,32 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
   @objc func deleteEffect() {
     self.effects.delete(effect: self.effect)
     self.onDelete()
+  }
+  
+  @objc func languageChanged() {
+    guard let selectedTitle = self.languagePopup.selectedItem?.title,
+          let newLanguage = ShaderLanguage.allCases.first(where: { $0.displayName == selectedTitle }) else {
+      return
+    }
+    
+    let currentLanguage = self.effects.getLanguage(effect: self.effect)
+    if newLanguage != currentLanguage {
+      // Update the language
+      self.effects.setLanguage(effect: self.effect, language: newLanguage)
+      
+      // Optionally update the shader template to the default for the new language
+      // if the current shader is the default template for the old language
+      let currentShader = self.effects.getShader(effect: self.effect)
+      let oldDefaultShader = currentLanguage == .slang ? defaultSlangShaderSource : defaultShaderSource
+      
+      if currentShader == oldDefaultShader {
+        let newDefaultShader = newLanguage == .slang ? defaultSlangShaderSource : defaultShaderSource
+        self.effects.setShader(effect: self.effect, shader: newDefaultShader)
+        self.shaderField.string = newDefaultShader
+      }
+      
+      self.onUpdate()
+    }
   }
 
   @objc func onSaveButton() {
