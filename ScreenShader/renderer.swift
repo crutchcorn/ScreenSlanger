@@ -77,12 +77,14 @@ class MetalRenderer {
   private var activeEffectSource: String? = nil
   private var renderPipeline: MTLRenderPipelineState? = nil
   private var samplerState: MTLSamplerState!
+  private var repeatSamplerState: MTLSamplerState!  // For tiling background textures
   private let baseTime = ProcessInfo.processInfo.systemUptime
   
   // RetroArch shader support
   private var activeShaderType: ActiveShaderType = .none
   private(set) var parameterState: ShaderParameterState = ShaderParameterState()
   private var shaderDirectory: URL? = nil
+  private var shaderPreset: ShaderPreset? = nil  // Loaded from .slangp file
   
   // Background texture for RetroArch shaders that need it
   private var backgroundTexture: MTLTexture? = nil
@@ -113,13 +115,21 @@ class MetalRenderer {
       fatalError("Could not create CVMetalTextureCache.")
     }
     
-    // Create a sampler state for shaders
+    // Create a sampler state for shaders (clamp for source texture)
     let samplerDescriptor = MTLSamplerDescriptor()
     samplerDescriptor.minFilter = .linear
     samplerDescriptor.magFilter = .linear
     samplerDescriptor.sAddressMode = .clampToEdge
     samplerDescriptor.tAddressMode = .clampToEdge
     self.samplerState = self.device.makeSamplerState(descriptor: samplerDescriptor)
+    
+    // Create a repeat sampler for tiling background textures
+    let repeatSamplerDescriptor = MTLSamplerDescriptor()
+    repeatSamplerDescriptor.minFilter = .linear
+    repeatSamplerDescriptor.magFilter = .linear
+    repeatSamplerDescriptor.sAddressMode = .repeat
+    repeatSamplerDescriptor.tAddressMode = .repeat
+    self.repeatSamplerState = self.device.makeSamplerState(descriptor: repeatSamplerDescriptor)
   }
   
   // MARK: - RetroArch Shader Pipeline Builder
@@ -266,6 +276,9 @@ class MetalRenderer {
   }
 
   func setEffectSource(_ effectSource: String?, shaderPath: String? = nil) throws {
+    // Reset preset
+    self.shaderPreset = nil
+    
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
       self.renderPipeline = nil
@@ -275,6 +288,12 @@ class MetalRenderer {
     }
     
     self.activeEffectSource = effectSource
+    
+    // Check if this is a .slangp preset file
+    if let path = shaderPath, path.hasSuffix(".slangp") {
+      try loadFromPreset(presetPath: path)
+      return
+    }
     
     // Determine shader directory for includes
     if let path = shaderPath {
@@ -325,6 +344,63 @@ class MetalRenderer {
     }
   }
   
+  /// Load shader from a .slangp preset file
+  private func loadFromPreset(presetPath: String) throws {
+    let presetURL = URL(fileURLWithPath: presetPath)
+    let preset = try ShaderPreset.parse(from: presetURL)
+    self.shaderPreset = preset
+    
+    // Resolve and load the actual shader
+    let shaderURL = preset.resolvePath(preset.shaderPath)
+    self.shaderDirectory = shaderURL.deletingLastPathComponent()
+    
+    let shaderSource = try String(contentsOf: shaderURL, encoding: .utf8)
+    self.activeEffectSource = shaderSource
+    
+    print("Loaded preset from: \(presetPath)")
+    print("  Shader: \(preset.shaderPath)")
+    print("  Textures: \(preset.textures.map { $0.name }.joined(separator: ", "))")
+    
+    // Compile the shader
+    let (pipeline, parameters) = try Self.buildRetroArchPipeline(
+      device: self.device,
+      effectSource: shaderSource,
+      shaderDirectory: self.shaderDirectory
+    )
+    self.renderPipeline = pipeline
+    self.activeShaderType = .retroArch
+    self.parameterState = ShaderParameterState()
+    self.parameterState.parameters = parameters
+    
+    // Apply parameter values from preset
+    for (name, value) in preset.parameterValues {
+      self.parameterState.setValue(value, for: name)
+    }
+    
+    // For any parameters not in preset, use defaults
+    for param in parameters {
+      if preset.parameterValues[param.name] == nil {
+        self.parameterState.setValue(param.defaultValue, for: param.name)
+      }
+    }
+    
+    // Load textures from preset
+    for texture in preset.textures {
+      let textureURL = preset.resolvePath(texture.path)
+      if texture.name == "BACKGROUND" {
+        loadTexture(from: textureURL, linear: texture.linear)
+        print("  Loaded BACKGROUND texture: \(texture.path)")
+      }
+      // TODO: Support additional textures (would need to track by name)
+    }
+    
+    print("Loaded RetroArch shader with \(parameters.count) parameters")
+    for param in parameters {
+      let value = self.parameterState.getValue(for: param.name)
+      print("  - \(param.name): \(value) [\(param.minValue) - \(param.maxValue)]")
+    }
+  }
+  
   /// Load background texture if the shader references BACKGROUND sampler
   private func loadBackgroundTextureIfNeeded(effectSource: String) {
     // Check if shader uses BACKGROUND texture
@@ -340,17 +416,29 @@ class MetalRenderer {
     }
     
     // Common background texture paths for RetroArch shaders
-    let possiblePaths = [
-      shaderDir.appendingPathComponent("png/4k/background.png"),
-      shaderDir.appendingPathComponent("png/2k/background.png"),
-      shaderDir.appendingPathComponent("background.png"),
-      shaderDir.appendingPathComponent("../background.png")
+    // Check for various common paper/background texture names
+    let textureNames = [
+      "background.png",
+      "beige_paper.png",
+      "textured_paper.png", 
+      "white_plaster.png",
+      "bgnoise_lg.png"
     ]
     
-    for path in possiblePaths {
-      if FileManager.default.fileExists(atPath: path.path) {
-        loadTexture(from: path)
-        return
+    let basePaths = [
+      shaderDir.appendingPathComponent("png/4k"),
+      shaderDir.appendingPathComponent("png/2k"),
+      shaderDir,
+      shaderDir.deletingLastPathComponent()
+    ]
+    
+    for basePath in basePaths {
+      for textureName in textureNames {
+        let path = basePath.appendingPathComponent(textureName)
+        if FileManager.default.fileExists(atPath: path.path) {
+          loadTexture(from: path)
+          return
+        }
       }
     }
     
@@ -358,17 +446,18 @@ class MetalRenderer {
   }
   
   /// Load a texture from a file
-  private func loadTexture(from url: URL) {
+  private func loadTexture(from url: URL, linear: Bool = false) {
     let textureLoader = MTKTextureLoader(device: device)
     do {
       self.backgroundTexture = try textureLoader.newTexture(
         URL: url,
         options: [
           .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-          .textureStorageMode: MTLStorageMode.private.rawValue
+          .textureStorageMode: MTLStorageMode.private.rawValue,
+          .SRGB: false  // Use linear color space for shader textures
         ]
       )
-      print("Loaded background texture: \(url.lastPathComponent)")
+      print("Loaded background texture: \(url.lastPathComponent) (linear: \(linear))")
     } catch {
       print("Failed to load background texture: \(error)")
     }
@@ -440,9 +529,16 @@ class MetalRenderer {
             textureHeight: height
           )
           
-          // Set background texture if available (typically at binding 3)
+          // Set background texture and sampler if available (at index 1)
+          // Use repeat sampler for tiling background textures
           if let bgTexture = self.backgroundTexture {
             encoder.setFragmentTexture(bgTexture, index: 1)
+            encoder.setFragmentSamplerState(self.repeatSamplerState, index: 1)
+          } else {
+            // Even if no background texture, we need a placeholder to avoid validation errors
+            // Use the source texture as a fallback
+            encoder.setFragmentTexture(texture, index: 1)
+            encoder.setFragmentSamplerState(self.repeatSamplerState, index: 1)
           }
           
         case .slang:
@@ -495,6 +591,13 @@ class MetalRenderer {
       pushBuffer.append(parameterState.getValue(for: param.name))
     }
     
+    // IMPORTANT: float4 members require 16-byte alignment in Metal
+    // After N floats, we need to pad to the next 16-byte boundary (4 floats)
+    // 7 floats = 28 bytes, next 16-byte boundary is 32 bytes (8 floats)
+    while pushBuffer.count % 4 != 0 {
+      pushBuffer.append(0)  // Padding for alignment
+    }
+    
     // Add standard RetroArch parameters (OutputSize, OriginalSize, SourceSize)
     // These are vec4s: xy = size, zw = 1.0/size
     pushBuffer.append(contentsOf: [
@@ -510,8 +613,6 @@ class MetalRenderer {
     
     encoder.setFragmentBytes(pushBuffer, length: pushBuffer.count * MemoryLayout<Float>.stride, index: 0)
     
-    // Set vertex uniforms (UBO with MVP matrix)
-    var mvp = matrix_identity_float4x4
-    encoder.setVertexBytes(&mvp, length: MemoryLayout<matrix_float4x4>.stride, index: 0)
+    // Note: We don't need vertex uniforms since our custom vertex shader generates the quad procedurally
   }
 }

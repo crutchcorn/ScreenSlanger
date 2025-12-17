@@ -58,6 +58,126 @@ struct CompiledRetroArchShader {
     let samplers: [ShaderSampler]
 }
 
+/// Texture definition from a slangp preset file
+struct PresetTexture {
+    let name: String
+    let path: String
+    let linear: Bool
+    let wrapMode: String?
+    let mipmap: Bool
+}
+
+/// Parsed slangp shader preset
+struct ShaderPreset {
+    let shaderPath: String
+    let textures: [PresetTexture]
+    let parameterValues: [String: Float]
+    let filterLinear: Bool
+    let wrapMode: String?
+    let presetDirectory: URL
+    
+    /// Parse a .slangp preset file
+    static func parse(from url: URL) throws -> ShaderPreset {
+        let content = try String(contentsOf: url, encoding: .utf8)
+        let presetDir = url.deletingLastPathComponent()
+        
+        var shaderPath: String? = nil
+        var textures: [PresetTexture] = []
+        var parameterValues: [String: Float] = [:]
+        var filterLinear = true
+        var wrapMode: String? = nil
+        var textureNames: [String] = []
+        var textureProps: [String: (path: String?, linear: Bool, wrapMode: String?, mipmap: Bool)] = [:]
+        
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty && !trimmed.hasPrefix("#") else { continue }
+            
+            // Parse key = "value" or key = value
+            guard let equalsIndex = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[..<equalsIndex]).trimmingCharacters(in: .whitespaces)
+            var value = String(trimmed[trimmed.index(after: equalsIndex)...])
+                .trimmingCharacters(in: .whitespaces)
+            // Remove quotes
+            if value.hasPrefix("\"") && value.hasSuffix("\"") {
+                value = String(value.dropFirst().dropLast())
+            }
+            
+            // Parse known keys
+            if key == "shader0" {
+                shaderPath = value
+            } else if key == "filter_linear0" {
+                filterLinear = value.lowercased() == "true"
+            } else if key == "wrap_mode0" {
+                wrapMode = value
+            } else if key == "textures" {
+                // Semicolon-separated list of texture names
+                textureNames = value.components(separatedBy: ";").map { $0.trimmingCharacters(in: .whitespaces) }
+            } else if textureNames.contains(key) {
+                // This is a texture path
+                var props = textureProps[key] ?? (path: nil, linear: false, wrapMode: nil, mipmap: false)
+                props.path = value
+                textureProps[key] = props
+            } else if key.hasSuffix("_linear") {
+                let texName = String(key.dropLast("_linear".count))
+                if textureNames.contains(texName) {
+                    var props = textureProps[texName] ?? (path: nil, linear: false, wrapMode: nil, mipmap: false)
+                    props.linear = value.lowercased() == "true"
+                    textureProps[texName] = props
+                }
+            } else if key.hasSuffix("_wrap_mode") {
+                let texName = String(key.dropLast("_wrap_mode".count))
+                if textureNames.contains(texName) {
+                    var props = textureProps[texName] ?? (path: nil, linear: false, wrapMode: nil, mipmap: false)
+                    props.wrapMode = value
+                    textureProps[texName] = props
+                }
+            } else if key.hasSuffix("_mipmap") {
+                let texName = String(key.dropLast("_mipmap".count))
+                if textureNames.contains(texName) {
+                    var props = textureProps[texName] ?? (path: nil, linear: false, wrapMode: nil, mipmap: false)
+                    props.mipmap = value.lowercased() == "true"
+                    textureProps[texName] = props
+                }
+            } else if let floatVal = Float(value) {
+                // Assume it's a parameter value
+                parameterValues[key] = floatVal
+            }
+        }
+        
+        // Build texture list
+        for name in textureNames {
+            if let props = textureProps[name], let path = props.path {
+                textures.append(PresetTexture(
+                    name: name,
+                    path: path,
+                    linear: props.linear,
+                    wrapMode: props.wrapMode,
+                    mipmap: props.mipmap
+                ))
+            }
+        }
+        
+        guard let shader = shaderPath else {
+            throw RetroArchShaderError.invalidShaderFormat("No shader0 defined in preset")
+        }
+        
+        return ShaderPreset(
+            shaderPath: shader,
+            textures: textures,
+            parameterValues: parameterValues,
+            filterLinear: filterLinear,
+            wrapMode: wrapMode,
+            presetDirectory: presetDir
+        )
+    }
+    
+    /// Resolve a relative path from the preset
+    func resolvePath(_ relativePath: String) -> URL {
+        return presetDirectory.appendingPathComponent(relativePath)
+    }
+}
+
 /// Compiler for RetroArch-style .slang shaders (GLSL with extensions)
 class RetroArchShaderCompiler {
     
@@ -135,11 +255,9 @@ class RetroArchShaderCompiler {
         
         var vertexLines: [String] = []
         var fragmentLines: [String] = []
-        var commonLines: [String] = []
+        var sharedLines: [String] = []  // Lines that go in both (uniforms, etc.)
         
-        var currentStage: String? = nil // nil = common, "vertex", "fragment"
-        var inPushConstant = false
-        var pushConstantFields: [String] = []
+        var currentStage: String? = nil // nil = common/shared, "vertex", "fragment"
         
         let lines = source.components(separatedBy: .newlines)
         
@@ -193,14 +311,49 @@ class RetroArchShaderCompiler {
             case "fragment":
                 fragmentLines.append(line)
             default:
-                commonLines.append(line)
+                // Common/shared section - need to filter what goes where
+                // Uniforms, push_constants go to both shaders
+                // Vertex inputs (in vec4 Position) should only go to vertex
+                sharedLines.append(line)
             }
         }
         
-        // Build complete vertex and fragment sources with common prefix
-        let commonSource = commonLines.joined(separator: "\n")
-        let vertexSource = commonSource + "\n" + vertexLines.joined(separator: "\n")
-        let fragmentSource = commonSource + "\n" + fragmentLines.joined(separator: "\n")
+        // Filter shared lines for each stage
+        let vertexSharedLines = sharedLines.filter { line in
+            // Include everything in vertex shader
+            return true
+        }
+        
+        let fragmentSharedLines = sharedLines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Exclude vertex input declarations from fragment shader
+            // These look like: layout(location = X) in vec4 Position;
+            if trimmed.contains("layout(location") && trimmed.contains(") in ") {
+                // Check if it's NOT an "out" that becomes fragment input
+                if !trimmed.contains(" out ") {
+                    // This is a vertex attribute input, skip in fragment
+                    return false
+                }
+            }
+            return true
+        }
+        
+        // Build complete vertex and fragment sources
+        let vertexSource = vertexSharedLines.joined(separator: "\n") + "\n" + vertexLines.joined(separator: "\n")
+        let fragmentSource = fragmentSharedLines.joined(separator: "\n") + "\n" + fragmentLines.joined(separator: "\n")
+        
+        print("=== Preprocessed Shader ===")
+        print("Parameters found: \(parameters.map { $0.name })")
+        print("Samplers found: \(samplers.map { $0.name })")
+        print("Vertex lines: \(vertexLines.count), Fragment lines: \(fragmentLines.count), Shared lines: \(sharedLines.count)")
+        
+        print("\n=== VERTEX SOURCE ===")
+        print(vertexSource)
+        print("=== END VERTEX SOURCE ===\n")
+        
+        print("\n=== FRAGMENT SOURCE ===")
+        print(fragmentSource)
+        print("=== END FRAGMENT SOURCE ===\n")
         
         return RetroArchShaderStages(
             vertexSource: vertexSource,
@@ -248,23 +401,39 @@ class RetroArchShaderCompiler {
     
     /// Compile a RetroArch shader source to Metal
     static func compileToMetal(source: String, shaderDirectory: URL? = nil) throws -> CompiledRetroArchShader {
+        print("=== RetroArchShaderCompiler.compileToMetal ===")
+        print("Source length: \(source.count) characters")
+        print("Shader directory: \(shaderDirectory?.path ?? "nil")")
+        
         guard let glslangPath = findGlslang() else {
+            print("ERROR: glslang not found!")
             throw RetroArchShaderError.glslangNotFound
         }
+        print("glslang found at: \(glslangPath)")
+        
         guard let spirvCrossPath = findSpirvCross() else {
+            print("ERROR: spirv-cross not found!")
             throw RetroArchShaderError.spirvCrossNotFound
         }
+        print("spirv-cross found at: \(spirvCrossPath)")
         
         // Preprocess the shader
+        print("Preprocessing shader...")
         let stages = try preprocess(source)
+        
+        print("Vertex source length: \(stages.vertexSource.count)")
+        print("Fragment source length: \(stages.fragmentSource.count)")
         
         // Create temp directory
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        print("Temp directory: \(tempDir.path)")
         
         defer {
-            try? FileManager.default.removeItem(at: tempDir)
+            // Don't remove temp dir for debugging
+            print("Temp files preserved at: \(tempDir.path)")
+            // try? FileManager.default.removeItem(at: tempDir)
         }
         
         // Compile vertex shader: GLSL -> SPIRV -> Metal
@@ -296,8 +465,8 @@ class RetroArchShaderCompiler {
         
         return CompiledRetroArchShader(
             metalSource: combinedMetal,
-            vertexFunctionName: "main0",
-            fragmentFunctionName: "main0",
+            vertexFunctionName: "vertex_main",
+            fragmentFunctionName: "fragment_main",
             parameters: stages.parameters,
             samplers: stages.samplers
         )
@@ -319,6 +488,13 @@ class RetroArchShaderCompiler {
         // Write GLSL source
         try source.write(to: inputFile, atomically: true, encoding: .utf8)
         
+        // Debug: print the source being compiled
+        print("=== Compiling \(stage) shader ===")
+        print("Source file: \(inputFile.path)")
+        print("First 500 chars of source:")
+        print(String(source.prefix(500)))
+        print("===")
+        
         // Step 1: GLSL -> SPIRV using glslangValidator
         let glslangProcess = Process()
         glslangProcess.executableURL = URL(fileURLWithPath: glslangPath)
@@ -330,13 +506,25 @@ class RetroArchShaderCompiler {
         ]
         
         // Add include path if shader directory is specified
+        // Note: -I must be directly followed by path with no space (e.g., -I/path/to/dir)
         if let dir = shaderDirectory {
-            glslangProcess.arguments?.insert(contentsOf: ["-I", dir.path], at: 1)
+            glslangProcess.arguments?.insert("-I\(dir.path)", at: 1)
         }
         
-        let glslangError = Pipe()
-        glslangProcess.standardError = glslangError
-        glslangProcess.standardOutput = Pipe()
+        print("Running: \(glslangPath) \(glslangProcess.arguments?.joined(separator: " ") ?? "")")
+        
+        // Use file-based output capture for more reliable error capture
+        let glslangStdoutFile = tempDir.appendingPathComponent("glslang_stdout.txt")
+        let glslangStderrFile = tempDir.appendingPathComponent("glslang_stderr.txt")
+        
+        FileManager.default.createFile(atPath: glslangStdoutFile.path, contents: nil)
+        FileManager.default.createFile(atPath: glslangStderrFile.path, contents: nil)
+        
+        let stdoutHandle = try FileHandle(forWritingTo: glslangStdoutFile)
+        let stderrHandle = try FileHandle(forWritingTo: glslangStderrFile)
+        
+        glslangProcess.standardOutput = stdoutHandle
+        glslangProcess.standardError = stderrHandle
         
         do {
             try glslangProcess.run()
@@ -345,19 +533,40 @@ class RetroArchShaderCompiler {
             throw RetroArchShaderError.processError("Failed to run glslangValidator: \(error)")
         }
         
+        try? stdoutHandle.close()
+        try? stderrHandle.close()
+        
+        let stdoutMessage = (try? String(contentsOf: glslangStdoutFile, encoding: .utf8)) ?? ""
+        let stderrMessage = (try? String(contentsOf: glslangStderrFile, encoding: .utf8)) ?? ""
+        
+        print("glslang exit code: \(glslangProcess.terminationStatus)")
+        if !stdoutMessage.isEmpty {
+            print("glslang stdout: \(stdoutMessage)")
+        }
+        if !stderrMessage.isEmpty {
+            print("glslang stderr: \(stderrMessage)")
+        }
+        
         if glslangProcess.terminationStatus != 0 {
-            let errorData = glslangError.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw RetroArchShaderError.glslCompilationFailed(errorMessage)
+            let combinedError = [stdoutMessage, stderrMessage]
+                .filter { !$0.isEmpty }
+                .joined(separator: "\n")
+            throw RetroArchShaderError.glslCompilationFailed(
+                combinedError.isEmpty ? "glslang failed with exit code \(glslangProcess.terminationStatus). Check temp files at: \(tempDir.path)" : combinedError
+            )
         }
         
         // Step 2: SPIRV -> Metal using spirv-cross
+        // Rename entry point based on stage to avoid conflicts when combining
+        let entryPointName = stage == "vert" ? "vertex_main" : "fragment_main"
+        
         let spirvCrossProcess = Process()
         spirvCrossProcess.executableURL = URL(fileURLWithPath: spirvCrossPath)
         spirvCrossProcess.arguments = [
             spirvFile.path,
             "--msl",  // Metal Shading Language output
             "--msl-version", "20100",  // Metal 2.1
+            "--rename-entry-point", "main", entryPointName, stage,  // Rename main to vertex_main/fragment_main
             "--output", metalFile.path
         ]
         
@@ -392,31 +601,111 @@ class RetroArchShaderCompiler {
         fragmentMetal: String,
         parameters: [ShaderParameter]
     ) -> String {
-        // Extract unique includes and type definitions from both shaders
-        var includes = Set<String>()
-        var typeDefinitions: [String] = []
-        var vertexMain = ""
-        var fragmentMain = ""
+        // ScreenShader renders fullscreen quads procedurally without vertex buffers.
+        // The RetroArch vertex shader expects vertex inputs, so we need to:
+        // 1. Use a custom vertex shader that generates fullscreen quad vertices
+        // 2. Extract shared structs (Push, UBO) from the generated Metal code
+        // 3. Use the RetroArch fragment shader as-is
         
-        // Process vertex shader
-        let vertexComponents = parseMetalShader(vertexMetal)
-        includes.formUnion(vertexComponents.includes)
-        typeDefinitions.append(contentsOf: vertexComponents.types)
-        vertexMain = vertexComponents.mainFunction
+        // Extract structs from vertex shader (Push is shared, UBO is not needed for our vertex shader)
+        var sharedStructs = ""
+        var inStruct = false
+        var braceCount = 0
+        var currentStruct = ""
         
-        // Process fragment shader - rename main0 to fragment_main0
-        let fragmentComponents = parseMetalShader(fragmentMetal)
-        includes.formUnion(fragmentComponents.includes)
-        // Add fragment types but avoid duplicates
-        for ftype in fragmentComponents.types {
-            if !typeDefinitions.contains(where: { $0.contains(ftype.components(separatedBy: " ")[1]) }) {
-                typeDefinitions.append(ftype)
+        for line in vertexMetal.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            // Capture struct definitions (Push only - we generate our own vertex shader)
+            if trimmed.hasPrefix("struct Push") {
+                inStruct = true
+                braceCount = 0
+                currentStruct = ""
+            }
+            
+            if inStruct {
+                currentStruct += line + "\n"
+                braceCount += line.filter { $0 == "{" }.count
+                braceCount -= line.filter { $0 == "}" }.count
+                if braceCount == 0 && currentStruct.contains("{") {
+                    sharedStructs += currentStruct + "\n"
+                    inStruct = false
+                    currentStruct = ""
+                }
             }
         }
-        fragmentMain = fragmentComponents.mainFunction
         
-        // Build combined shader
-        var combined = """
+        // Extract fragment function and its output struct from fragment shader
+        // First, rename fragment_main_in references since we'll provide our own vertex output
+        var fragmentProcessed = fragmentMetal
+        
+        // Extract fragment_main_out struct
+        var fragmentOutStruct = ""
+        inStruct = false
+        braceCount = 0
+        currentStruct = ""
+        
+        for line in fragmentMetal.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            if trimmed.hasPrefix("struct fragment_main_out") {
+                inStruct = true
+                braceCount = 0
+                currentStruct = ""
+            }
+            
+            if inStruct {
+                currentStruct += line + "\n"
+                braceCount += line.filter { $0 == "{" }.count
+                braceCount -= line.filter { $0 == "}" }.count
+                if braceCount == 0 && currentStruct.contains("{") {
+                    fragmentOutStruct = currentStruct
+                    inStruct = false
+                    break
+                }
+            }
+        }
+        
+        // Extract fragment function
+        var fragmentFunction = ""
+        var inFunction = false
+        braceCount = 0
+        
+        for line in fragmentMetal.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            if trimmed.hasPrefix("fragment fragment_main_out fragment_main") {
+                inFunction = true
+                braceCount = 0
+            }
+            
+            if inFunction {
+                fragmentFunction += line + "\n"
+                braceCount += line.filter { $0 == "{" }.count
+                braceCount -= line.filter { $0 == "}" }.count
+                if braceCount == 0 && fragmentFunction.contains("{") {
+                    break
+                }
+            }
+        }
+        
+        // Replace fragment_main_in with VertexOut in the fragment function
+        fragmentFunction = fragmentFunction.replacingOccurrences(
+            of: "fragment_main_in",
+            with: "VertexOut"
+        )
+        
+        // Debug: print extracted components
+        print("=== Extracted sharedStructs ===")
+        print(sharedStructs)
+        print("=== Extracted fragmentOutStruct ===")
+        print(fragmentOutStruct)
+        print("=== Extracted fragmentFunction ===")
+        print(fragmentFunction)
+        print("=== End extraction debug ===")
+        
+        // Build combined shader with custom vertex shader
+        let combined = """
         // Combined RetroArch shader compiled for Metal
         // Auto-generated by ScreenShader
         
@@ -425,57 +714,46 @@ class RetroArchShaderCompiler {
         
         using namespace metal;
         
-        """
+        // === Shared Structs from RetroArch Shader ===
+        \(sharedStructs)
         
-        // Add type definitions from vertex shader
-        combined += "\n// === Vertex Shader Types and Code ===\n"
-        combined += vertexMetal
+        // === Vertex Shader Output / Fragment Shader Input ===
+        // Note: [[user(locn0)]] matches spirv-cross's layout(location = 0)
+        struct VertexOut {
+            float4 position [[position]];
+            float2 vTexCoord [[user(locn0)]];
+        };
         
-        // Add fragment shader with renamed function
-        combined += "\n// === Fragment Shader Types and Code ===\n"
-        // Rename the fragment main function to avoid conflict
-        let renamedFragmentMetal = fragmentMetal
-            .replacingOccurrences(of: "vertex main0", with: "fragment fragment_main0")
-            .replacingOccurrences(of: "fragment main0", with: "fragment fragment_main0")
-        combined += renamedFragmentMetal
-        
-        return combined
-    }
-    
-    /// Parse a Metal shader to extract includes, types, and main function
-    private static func parseMetalShader(_ source: String) -> (includes: [String], types: [String], mainFunction: String) {
-        var includes: [String] = []
-        var types: [String] = []
-        var mainFunction = ""
-        
-        let lines = source.components(separatedBy: .newlines)
-        var inMain = false
-        var braceCount = 0
-        
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        // === Custom Vertex Shader (Fullscreen Quad) ===
+        vertex VertexOut vertex_main(uint vertexId [[vertex_id]]) {
+            // Generate fullscreen quad vertices procedurally
+            float2 quadVertices[6] = {
+                float2(-1.0, -1.0),
+                float2( 1.0, -1.0),
+                float2(-1.0,  1.0),
+                float2(-1.0,  1.0),
+                float2( 1.0, -1.0),
+                float2( 1.0,  1.0)
+            };
             
-            if trimmed.hasPrefix("#include") {
-                includes.append(line)
-            } else if trimmed.hasPrefix("struct ") || trimmed.hasPrefix("constant ") {
-                types.append(line)
-            }
-            
-            if trimmed.contains("main0(") {
-                inMain = true
-            }
-            
-            if inMain {
-                mainFunction += line + "\n"
-                braceCount += line.filter { $0 == "{" }.count
-                braceCount -= line.filter { $0 == "}" }.count
-                if braceCount == 0 && mainFunction.contains("{") {
-                    inMain = false
-                }
-            }
+            VertexOut out;
+            out.position = float4(quadVertices[vertexId], 0.0, 1.0);
+            // Texture coordinates: (0,0) at top-left, (1,1) at bottom-right
+            out.vTexCoord = float2(
+                (quadVertices[vertexId].x + 1.0) * 0.5,
+                (1.0 - quadVertices[vertexId].y) * 0.5
+            );
+            return out;
         }
         
-        return (includes, types, mainFunction)
+        // === Fragment Shader Output ===
+        \(fragmentOutStruct)
+        
+        // === Fragment Shader ===
+        \(fragmentFunction)
+        """
+        
+        return combined
     }
 }
 
