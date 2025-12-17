@@ -121,18 +121,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   private func getMenuBarIcon() -> NSImage {
-    let active = self.config.effects.anyEffectActive()
+    let active = self.config.active
     let systemSymbolName = active ? "paintbrush.fill" : "paintbrush"
     return NSImage(
       systemSymbolName: systemSymbolName, accessibilityDescription: "ScreenShader")!
   }
 
   @objc private func toggleEffect() {
-    if self.config.effects.anyEffectActive() {
-      self.config.effects.deactivateAll()
-    } else {
-      self.config.effects.activateDefault()
-    }
+    self.config.toggleActive()
     self.refreshConfig()
   }
 

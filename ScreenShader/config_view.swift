@@ -1,45 +1,88 @@
 import AppKit
 
-class ConfigViewController: NSViewController, NSTableViewDelegate, NSTableViewDataSource {
+class ConfigViewController: NSViewController {
   var config: Config! = nil
-  var effects: Effects {
-    return self.config.effects
-  }
   var onConfigUpdate: () -> Void = {}
   var errorMessage: ErrorMessage! = nil
 
-  private var tableView: NSTableView! = nil
+  private var stackView: NSStackView! = nil
+  private var shaderPathField: NSTextField! = nil
+  private var browseButton: NSButton! = nil
+  private var activateButton: NSButton! = nil
+  private var reloadButton: NSButton! = nil
   private var errorMessageField: NSTextField! = nil
-  private var newEffectButton: NSButton! = nil
-  private var contentPane: NSView! = nil
-  private var effectToController: [UUID: EffectViewController] = [:]
 
   override func loadView() {
-    let splitView = NSSplitView()
-    splitView.dividerStyle = .thin
-    splitView.isVertical = true
-    splitView.translatesAutoresizingMaskIntoConstraints = false
+    self.view = NSView()
+    self.view.translatesAutoresizingMaskIntoConstraints = false
 
-    let tabsPane = NSStackView()
-    tabsPane.orientation = .vertical
-    tabsPane.spacing = 10
-    tabsPane.translatesAutoresizingMaskIntoConstraints = false
-
-    self.tableView = NSTableView()
-    self.tableView.delegate = self
-    self.tableView.dataSource = self
-    self.tableView.headerView = nil
-    self.tableView.focusRingType = .none
-
-    let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("Tabs"))
-    column.title = "Tabs"
-    self.tableView.addTableColumn(column)
-
-    let scrollView = NSScrollView()
-    scrollView.documentView = self.tableView
-    scrollView.hasVerticalScroller = true
-    scrollView.translatesAutoresizingMaskIntoConstraints = false
-
+    self.stackView = NSStackView()
+    self.stackView.orientation = .vertical
+    self.stackView.spacing = 16
+    self.stackView.alignment = .leading
+    self.stackView.translatesAutoresizingMaskIntoConstraints = false
+    self.view.addSubview(self.stackView)
+    
+    // Title
+    let titleLabel = NSTextField(labelWithString: "ScreenShader")
+    titleLabel.font = NSFont.boldSystemFont(ofSize: 18)
+    titleLabel.translatesAutoresizingMaskIntoConstraints = false
+    self.stackView.addArrangedSubview(titleLabel)
+    
+    // Shader file path section
+    let shaderPathStack = NSStackView()
+    shaderPathStack.orientation = .horizontal
+    shaderPathStack.spacing = 8
+    shaderPathStack.alignment = .centerY
+    shaderPathStack.translatesAutoresizingMaskIntoConstraints = false
+    
+    let shaderPathLabel = NSTextField(labelWithString: "Shader File:")
+    shaderPathLabel.translatesAutoresizingMaskIntoConstraints = false
+    shaderPathStack.addArrangedSubview(shaderPathLabel)
+    
+    self.shaderPathField = NSTextField()
+    self.shaderPathField.placeholderString = "Select a .slang file..."
+    self.shaderPathField.isEditable = false
+    self.shaderPathField.focusRingType = .none
+    self.shaderPathField.translatesAutoresizingMaskIntoConstraints = false
+    self.shaderPathField.stringValue = self.config.shaderPath ?? ""
+    shaderPathStack.addArrangedSubview(self.shaderPathField)
+    
+    self.browseButton = NSButton(title: "Browse...", target: self, action: #selector(self.browseForShader))
+    self.browseButton.translatesAutoresizingMaskIntoConstraints = false
+    shaderPathStack.addArrangedSubview(self.browseButton)
+    
+    self.stackView.addArrangedSubview(shaderPathStack)
+    
+    // Button row
+    let buttonStack = NSStackView()
+    buttonStack.orientation = .horizontal
+    buttonStack.spacing = 12
+    buttonStack.alignment = .centerY
+    buttonStack.translatesAutoresizingMaskIntoConstraints = false
+    
+    self.activateButton = NSButton(title: self.getActivateButtonTitle(), target: self, action: #selector(self.toggleActive))
+    self.activateButton.translatesAutoresizingMaskIntoConstraints = false
+    self.activateButton.bezelStyle = .rounded
+    self.activateButton.isEnabled = self.config.hasShaderPath()
+    buttonStack.addArrangedSubview(self.activateButton)
+    
+    self.reloadButton = NSButton(title: "Reload Shader", target: self, action: #selector(self.reloadShader))
+    self.reloadButton.translatesAutoresizingMaskIntoConstraints = false
+    self.reloadButton.isEnabled = self.config.hasShaderPath()
+    buttonStack.addArrangedSubview(self.reloadButton)
+    
+    self.stackView.addArrangedSubview(buttonStack)
+    
+    // Add Slang availability indicator
+    if !SlangCompiler.isAvailable {
+      let warningLabel = NSTextField(labelWithString: "⚠️ slangc not found - Slang shaders won't compile")
+      warningLabel.textColor = .systemOrange
+      warningLabel.translatesAutoresizingMaskIntoConstraints = false
+      self.stackView.addArrangedSubview(warningLabel)
+    }
+    
+    // Error message field
     self.errorMessageField = NSTextField()
     self.errorMessageField.isEditable = false
     self.errorMessageField.drawsBackground = false
@@ -49,6 +92,7 @@ class ConfigViewController: NSViewController, NSTableViewDelegate, NSTableViewDa
     self.errorMessageField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     self.errorMessageField.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
     self.errorMessageField.translatesAutoresizingMaskIntoConstraints = false
+    self.stackView.addArrangedSubview(self.errorMessageField)
 
     self.errorMessage.onMessageChanged = {
       self.errorMessageField.stringValue = self.errorMessage.get() ?? ""
@@ -56,111 +100,55 @@ class ConfigViewController: NSViewController, NSTableViewDelegate, NSTableViewDa
     }
     self.errorMessage.onMessageChanged?()
 
-    self.newEffectButton = NSButton(
-      title: "New Effect", target: self, action: #selector(self.newEffect))
-    self.newEffectButton.translatesAutoresizingMaskIntoConstraints = false
-
-    tabsPane.addArrangedSubview(scrollView)
-    tabsPane.addArrangedSubview(self.errorMessageField)
-    tabsPane.addArrangedSubview(self.newEffectButton)
-
-    self.contentPane = NSView()
-
-    splitView.addArrangedSubview(tabsPane)
-    splitView.addArrangedSubview(self.contentPane)
-
     NSLayoutConstraint.activate([
-      scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
-
-      self.errorMessageField.leftAnchor.constraint(equalTo: tabsPane.leftAnchor, constant: 10),
-      self.errorMessageField.rightAnchor.constraint(equalTo: tabsPane.rightAnchor, constant: -10),
-
-      self.newEffectButton.heightAnchor.constraint(equalToConstant: 30),
-      self.newEffectButton.bottomAnchor.constraint(equalTo: tabsPane.bottomAnchor, constant: -10),
-
-      self.contentPane.topAnchor.constraint(equalTo: splitView.topAnchor),
-      self.contentPane.bottomAnchor.constraint(equalTo: splitView.bottomAnchor),
-
-      tabsPane.widthAnchor.constraint(equalTo: splitView.widthAnchor, multiplier: 0.3),
+      self.stackView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor, constant: 20),
+      self.stackView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -20),
+      self.stackView.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 20),
+      
+      self.shaderPathField.widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
     ])
-
-    self.view = splitView
-    if self.effects.effectList().count > 0 {
-      self.selectTab(index: 0)
-    }
   }
-
-  private func selectTab(index: Int) {
-    self.tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
-    self.tableView.scrollRowToVisible(index)
+  
+  private func getActivateButtonTitle() -> String {
+    return self.config.active ? "Deactivate" : "Activate"
   }
-
-  @objc private func newEffect() {
-    let _ = self.effects.new()
-    self.tableView.reloadData()
-    self.selectTab(index: self.effects.effectList().count - 1)
+  
+  @objc func toggleActive() {
+    self.config.toggleActive()
+    self.activateButton.title = self.getActivateButtonTitle()
     self.onConfigUpdate()
   }
-
-  private func onUpdateEffect(effect: UUID) {
-    self.tableView.reloadData()
-    self.onConfigUpdate()
-  }
-
-  private func onDeleteEffect(effect: UUID) {
-    self.tableView.reloadData()
-    self.tableView.deselectAll(nil)
-    self.effectToController.removeValue(forKey: effect)
-    self.onConfigUpdate()
-  }
-
-  func numberOfRows(in tableView: NSTableView) -> Int {
-    return self.effects.effectList().count
-  }
-
-  func tableView(_ tableView: NSTableView, objectValueFor tableColumn: NSTableColumn?, row: Int)
-    -> Any?
-  {
-    let effect = self.effects.effectList()[row]
-    let name = self.effects.getName(effect: effect)
-    let isActive = self.effects.isActive(effect: effect)
-    return isActive ? "\(name) (active)" : name
-  }
-
-  func tableViewSelectionDidChange(_ notification: Notification) {
-    let selectedRow = self.tableView.selectedRow
-    if selectedRow >= 0 && selectedRow < self.effects.effectList().count {
-      let selectedEffect = self.effects.effectList()[selectedRow]
-
-      if !self.effectToController.keys.contains(selectedEffect) {
-        let controller = EffectViewController()
-        controller.effects = self.effects
-        controller.effect = selectedEffect
-        controller.onUpdate = { self.onUpdateEffect(effect: selectedEffect) }
-        controller.onDelete = { self.onDeleteEffect(effect: selectedEffect) }
-        self.effectToController[selectedEffect] = controller
+  
+  @objc func browseForShader() {
+    let openPanel = NSOpenPanel()
+    openPanel.title = "Select Shader File"
+    openPanel.allowedContentTypes = [.init(filenameExtension: "slang")!]
+    openPanel.allowsMultipleSelection = false
+    openPanel.canChooseDirectories = false
+    openPanel.canChooseFiles = true
+    
+    openPanel.begin { [weak self] result in
+      guard let self = self else { return }
+      if result == .OK, let url = openPanel.url {
+        let path = url.path
+        self.config.shaderPath = path
+        self.shaderPathField.stringValue = path
+        self.activateButton.isEnabled = true
+        self.reloadButton.isEnabled = true
+        
+        self.onConfigUpdate()
       }
-
-      let controller = self.effectToController[selectedEffect]!
-      self.contentPane.subviews = [controller.view]
-
-      NSLayoutConstraint.activate([
-        controller.view.leadingAnchor.constraint(equalTo: self.contentPane.leadingAnchor),
-        controller.view.trailingAnchor.constraint(equalTo: self.contentPane.trailingAnchor),
-        controller.view.topAnchor.constraint(equalTo: self.contentPane.topAnchor),
-        controller.view.bottomAnchor.constraint(equalTo: self.contentPane.bottomAnchor),
-      ])
-    } else {
-      self.contentPane.subviews = []
     }
-    self.tableView.reloadData()
   }
-
-  func refreshActiveEffects() {
-    self.tableView.reloadData()
-    for controller in self.effectToController.values {
-      controller.refreshActiveCheckbox()
-    }
+  
+  @objc func reloadShader() {
+    // Force re-read of the shader file by triggering an update
+    self.onConfigUpdate()
+  }
+  
+  func refreshUI() {
+    self.activateButton.title = self.getActivateButtonTitle()
+    self.activateButton.isEnabled = self.config.hasShaderPath()
   }
 }
 
@@ -193,6 +181,6 @@ class ConfigWindowController: NSWindowController {
   }
 
   func refreshActiveEffects() {
-    self.configViewController.refreshActiveEffects()
+    self.configViewController.refreshUI()
   }
 }
