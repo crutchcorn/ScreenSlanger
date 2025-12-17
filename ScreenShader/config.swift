@@ -330,20 +330,8 @@ class Config: Codable {
     }
 
     if config.effects.effectList().isEmpty {
-      // Add predefined Metal shaders
-      for (name, shader) in predefinedShaders {
-        let effect = config.effects.new(language: .metal)
-        config.effects.setName(effect: effect, newName: name)
-        config.effects.setShader(effect: effect, shader: shader)
-      }
-      // Add predefined Slang shaders (only if slangc is available)
-      if SlangCompiler.isAvailable {
-        for (name, shader) in predefinedSlangShaders {
-          let effect = config.effects.new(language: .slang)
-          config.effects.setName(effect: effect, newName: name)
-          config.effects.setShader(effect: effect, shader: shader)
-        }
-      }
+      // Create a default empty effect for the user to configure with a shader file
+      let _ = config.effects.new(language: .slang)
     }
 
     return config
@@ -356,17 +344,19 @@ class Effects: Codable {
   private var deletedEffects: [UUID] = []
   private var effectToName: [UUID: String] = [:]
   private var effectToShader: [UUID: String] = [:]
+  private var effectToShaderPath: [UUID: String] = [:]
   private var effectToActive: [UUID: Bool] = [:]
   private var effectToLanguage: [UUID: ShaderLanguage] = [:]
   private var mostRecentActiveEffect: UUID? = nil
   
-  // Custom CodingKeys to handle optional effectToLanguage
+  // Custom CodingKeys to handle optional effectToLanguage and effectToShaderPath
   private enum CodingKeys: String, CodingKey {
     case nextEffectNumber
     case effects
     case deletedEffects
     case effectToName
     case effectToShader
+    case effectToShaderPath
     case effectToActive
     case effectToLanguage
     case mostRecentActiveEffect
@@ -383,6 +373,7 @@ class Effects: Codable {
     deletedEffects = try container.decode([UUID].self, forKey: .deletedEffects)
     effectToName = try container.decode([UUID: String].self, forKey: .effectToName)
     effectToShader = try container.decode([UUID: String].self, forKey: .effectToShader)
+    effectToShaderPath = try container.decodeIfPresent([UUID: String].self, forKey: .effectToShaderPath) ?? [:]
     effectToActive = try container.decode([UUID: Bool].self, forKey: .effectToActive)
     // Handle missing effectToLanguage for backwards compatibility
     effectToLanguage = try container.decodeIfPresent([UUID: ShaderLanguage].self, forKey: .effectToLanguage) ?? [:]
@@ -393,14 +384,14 @@ class Effects: Codable {
     return self.effects
   }
 
-  func new(language: ShaderLanguage = .metal) -> UUID {
+  func new(language: ShaderLanguage = .slang) -> UUID {
     let newEffectID = UUID()
     let newEffectName = "Effect \(self.nextEffectNumber)"
     self.nextEffectNumber += 1
 
     self.effects.append(newEffectID)
     self.effectToName[newEffectID] = newEffectName
-    self.effectToShader[newEffectID] = language == .slang ? defaultSlangShaderSource : defaultShaderSource
+    self.effectToShader[newEffectID] = ""  // Empty - will be loaded from file
     self.effectToActive[newEffectID] = false
     self.effectToLanguage[newEffectID] = language
 
@@ -445,11 +436,47 @@ class Effects: Codable {
   }
 
   func getShader(effect: UUID) -> String {
-    return self.effectToShader[effect]!
+    // If a shader path is set, read from file
+    if let path = effectToShaderPath[effect], !path.isEmpty {
+      do {
+        let shaderSource = try String(contentsOfFile: path, encoding: .utf8)
+        return shaderSource
+      } catch {
+        print("Failed to read shader from file: \(error)")
+        // Fall back to cached shader if file read fails
+        return self.effectToShader[effect] ?? ""
+      }
+    }
+    return self.effectToShader[effect] ?? ""
   }
 
   func setShader(effect: UUID, shader: String) {
     self.effectToShader[effect] = shader
+  }
+
+  func getShaderPath(effect: UUID) -> String? {
+    return self.effectToShaderPath[effect]
+  }
+
+  func setShaderPath(effect: UUID, path: String?) {
+    if let path = path, !path.isEmpty {
+      self.effectToShaderPath[effect] = path
+      // Infer language from file extension
+      if path.hasSuffix(".slang") {
+        self.effectToLanguage[effect] = .slang
+      } else if path.hasSuffix(".metal") {
+        self.effectToLanguage[effect] = .metal
+      }
+    } else {
+      self.effectToShaderPath.removeValue(forKey: effect)
+    }
+  }
+
+  func hasShaderPath(effect: UUID) -> Bool {
+    if let path = effectToShaderPath[effect] {
+      return !path.isEmpty
+    }
+    return false
   }
 
   func getLanguage(effect: UUID) -> ShaderLanguage {

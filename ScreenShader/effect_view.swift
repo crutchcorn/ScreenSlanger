@@ -1,33 +1,6 @@
 import AppKit
 
-class SourceTextView: NSTextView {
-  override func insertTab(_ sender: Any?) {
-    self.insertText("  ", replacementRange: self.selectedRange())
-  }
-  
-  // Disable the context menu to prevent Metal library loading crash
-  override func menu(for event: NSEvent) -> NSMenu? {
-    return nil
-  }
-  
-  // Override performKeyEquivalent to handle Cmd key events without triggering system UI
-  override func performKeyEquivalent(with event: NSEvent) -> Bool {
-    // Let standard text editing shortcuts through (Cmd+C, Cmd+V, etc.)
-    if event.modifierFlags.contains(.command) {
-      let key = event.charactersIgnoringModifiers ?? ""
-      switch key {
-      case "c", "v", "x", "a", "z", "s":
-        return super.performKeyEquivalent(with: event)
-      default:
-        // Consume other Cmd key events to prevent system UI crashes
-        return true
-      }
-    }
-    return super.performKeyEquivalent(with: event)
-  }
-}
-
-class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDelegate {
+class EffectViewController: NSViewController, NSTextFieldDelegate {
   var effects: Effects! = nil
   var effect: UUID! = nil
   var onUpdate: () -> Void = {}
@@ -37,10 +10,11 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
   private var nameField: NSTextField! = nil
   private var activeButton: NSButton! = nil
   private var languageLabel: NSTextField! = nil
-  private var languagePopup: NSPopUpButton! = nil
   private var deleteButton: NSButton! = nil
-  private var shaderField: NSTextView! = nil
-  private var saveButton: NSButton! = nil
+  private var shaderPathLabel: NSTextField! = nil
+  private var shaderPathField: NSTextField! = nil
+  private var browseButton: NSButton! = nil
+  private var reloadButton: NSButton! = nil
 
   override func loadView() {
     self.view = NSView()
@@ -69,35 +43,48 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
     self.activeButton.state = self.effects.isActive(effect: self.effect) ? .on : .off
     self.stackView.addArrangedSubview(self.activeButton)
     
-    // Shader language selector
-    let languageStack = NSStackView()
-    languageStack.orientation = .horizontal
-    languageStack.spacing = 8
-    languageStack.alignment = .centerY
-    languageStack.translatesAutoresizingMaskIntoConstraints = false
+    // Shader file path section
+    let shaderPathStack = NSStackView()
+    shaderPathStack.orientation = .horizontal
+    shaderPathStack.spacing = 8
+    shaderPathStack.alignment = .centerY
+    shaderPathStack.translatesAutoresizingMaskIntoConstraints = false
     
-    self.languageLabel = NSTextField(labelWithString: "Shader Language:")
+    self.shaderPathLabel = NSTextField(labelWithString: "Shader File:")
+    self.shaderPathLabel.translatesAutoresizingMaskIntoConstraints = false
+    shaderPathStack.addArrangedSubview(self.shaderPathLabel)
+    
+    self.shaderPathField = NSTextField()
+    self.shaderPathField.placeholderString = "Select a .slang or .metal file..."
+    self.shaderPathField.isEditable = false
+    self.shaderPathField.focusRingType = .none
+    self.shaderPathField.translatesAutoresizingMaskIntoConstraints = false
+    self.shaderPathField.stringValue = self.effects.getShaderPath(effect: self.effect) ?? ""
+    shaderPathStack.addArrangedSubview(self.shaderPathField)
+    
+    self.browseButton = NSButton(title: "Browse...", target: self, action: #selector(self.browseForShader))
+    self.browseButton.translatesAutoresizingMaskIntoConstraints = false
+    shaderPathStack.addArrangedSubview(self.browseButton)
+    
+    self.reloadButton = NSButton(title: "Reload", target: self, action: #selector(self.reloadShader))
+    self.reloadButton.translatesAutoresizingMaskIntoConstraints = false
+    self.reloadButton.isEnabled = self.effects.hasShaderPath(effect: self.effect)
+    shaderPathStack.addArrangedSubview(self.reloadButton)
+    
+    self.stackView.addArrangedSubview(shaderPathStack)
+    
+    // Show current shader language
+    self.languageLabel = NSTextField(labelWithString: "Language: \(self.effects.getLanguage(effect: self.effect).displayName)")
     self.languageLabel.translatesAutoresizingMaskIntoConstraints = false
-    languageStack.addArrangedSubview(self.languageLabel)
-    
-    self.languagePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    self.languagePopup.translatesAutoresizingMaskIntoConstraints = false
-    self.languagePopup.addItems(withTitles: ShaderLanguage.allCases.map { $0.displayName })
-    let currentLanguage = self.effects.getLanguage(effect: self.effect)
-    self.languagePopup.selectItem(withTitle: currentLanguage.displayName)
-    self.languagePopup.target = self
-    self.languagePopup.action = #selector(self.languageChanged)
-    languageStack.addArrangedSubview(self.languagePopup)
+    self.stackView.addArrangedSubview(self.languageLabel)
     
     // Add Slang availability indicator
     if !SlangCompiler.isAvailable {
-      let warningLabel = NSTextField(labelWithString: "⚠️ slangc not found")
+      let warningLabel = NSTextField(labelWithString: "⚠️ slangc not found - Slang shaders won't compile")
       warningLabel.textColor = .systemOrange
       warningLabel.translatesAutoresizingMaskIntoConstraints = false
-      languageStack.addArrangedSubview(warningLabel)
+      self.stackView.addArrangedSubview(warningLabel)
     }
-    
-    self.stackView.addArrangedSubview(languageStack)
 
     self.deleteButton = NSButton(
       title: "Delete effect",
@@ -106,38 +93,13 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
     self.deleteButton.translatesAutoresizingMaskIntoConstraints = false
     self.stackView.addArrangedSubview(self.deleteButton)
 
-    self.shaderField = SourceTextView()
-    self.shaderField.isEditable = true
-    self.shaderField.isVerticallyResizable = true
-    self.shaderField.isHorizontallyResizable = true
-    self.shaderField.font = NSFont.monospacedSystemFont(
-      ofSize: NSFont.systemFontSize, weight: .regular)
-    self.shaderField.string = self.effects.getShader(effect: self.effect)
-    self.shaderField.delegate = self
-    self.shaderField.allowsUndo = true
-
-    let shaderScrollView = NSScrollView()
-    shaderScrollView.documentView = self.shaderField
-    shaderScrollView.hasVerticalScroller = true
-    shaderScrollView.hasHorizontalScroller = true
-    shaderScrollView.translatesAutoresizingMaskIntoConstraints = false
-    self.stackView.addArrangedSubview(shaderScrollView)
-
-    self.saveButton = NSButton(
-      title: "Save",
-      target: self,
-      action: #selector(self.onSaveButton))
-    self.saveButton.translatesAutoresizingMaskIntoConstraints = false
-    self.saveButton.isEnabled = false
-    self.stackView.addArrangedSubview(self.saveButton)
-
     NSLayoutConstraint.activate([
       self.stackView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor, constant: 10),
       self.stackView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -10),
       self.stackView.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 10),
       self.stackView.bottomAnchor.constraint(equalTo: self.view.bottomAnchor, constant: -10),
-
-      self.shaderField.heightAnchor.constraint(greaterThanOrEqualToConstant: 200),
+      
+      self.shaderPathField.widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
     ])
   }
 
@@ -151,35 +113,33 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
     self.onDelete()
   }
   
-  @objc func languageChanged() {
-    guard let selectedTitle = self.languagePopup.selectedItem?.title,
-          let newLanguage = ShaderLanguage.allCases.first(where: { $0.displayName == selectedTitle }) else {
-      return
-    }
+  @objc func browseForShader() {
+    let openPanel = NSOpenPanel()
+    openPanel.title = "Select Shader File"
+    openPanel.allowedContentTypes = [.init(filenameExtension: "slang")!, .init(filenameExtension: "metal")!]
+    openPanel.allowsMultipleSelection = false
+    openPanel.canChooseDirectories = false
+    openPanel.canChooseFiles = true
     
-    let currentLanguage = self.effects.getLanguage(effect: self.effect)
-    if newLanguage != currentLanguage {
-      // Update the language
-      self.effects.setLanguage(effect: self.effect, language: newLanguage)
-      
-      // Optionally update the shader template to the default for the new language
-      // if the current shader is the default template for the old language
-      let currentShader = self.effects.getShader(effect: self.effect)
-      let oldDefaultShader = currentLanguage == .slang ? defaultSlangShaderSource : defaultShaderSource
-      
-      if currentShader == oldDefaultShader {
-        let newDefaultShader = newLanguage == .slang ? defaultSlangShaderSource : defaultShaderSource
-        self.effects.setShader(effect: self.effect, shader: newDefaultShader)
-        self.shaderField.string = newDefaultShader
+    openPanel.begin { [weak self] result in
+      guard let self = self else { return }
+      if result == .OK, let url = openPanel.url {
+        let path = url.path
+        self.effects.setShaderPath(effect: self.effect, path: path)
+        self.shaderPathField.stringValue = path
+        self.reloadButton.isEnabled = true
+        
+        // Update language label based on file extension
+        let language = self.effects.getLanguage(effect: self.effect)
+        self.languageLabel.stringValue = "Language: \(language.displayName)"
+        
+        self.onUpdate()
       }
-      
-      self.onUpdate()
     }
   }
-
-  @objc func onSaveButton() {
-    self.effects.setShader(effect: self.effect, shader: self.shaderField.string)
-    self.saveButton.isEnabled = false
+  
+  @objc func reloadShader() {
+    // Force re-read of the shader file by triggering an update
     self.onUpdate()
   }
 
@@ -189,10 +149,6 @@ class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDel
       self.effects.setName(effect: self.effect, newName: self.nameField.stringValue)
       self.onUpdate()
     }
-  }
-
-  func textDidChange(_ notification: Notification) {
-    self.saveButton.isEnabled = true
   }
 
   func refreshActiveCheckbox() {

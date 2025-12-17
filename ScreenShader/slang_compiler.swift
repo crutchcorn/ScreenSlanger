@@ -37,7 +37,10 @@ class SlangCompiler {
         "/usr/local/slang/bin/slangc",
         // User home directory
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".slang/bin/slangc").path
+            .appendingPathComponent(".slang/bin/slangc").path,
+        // Common Slang download locations
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("slang/bin/slangc").path
     ].compactMap { $0 }
     
     /// Find the slangc executable
