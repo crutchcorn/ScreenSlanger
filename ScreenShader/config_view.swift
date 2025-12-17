@@ -48,7 +48,7 @@ class ConfigViewController: NSViewController {
     shaderPathStack.addArrangedSubview(shaderPathLabel)
     
     self.shaderPathField = NSTextField()
-    self.shaderPathField.placeholderString = "Select a .slang file..."
+    self.shaderPathField.placeholderString = "Select a .slang or .slangp file..."
     self.shaderPathField.isEditable = false
     self.shaderPathField.focusRingType = .none
     self.shaderPathField.translatesAutoresizingMaskIntoConstraints = false
@@ -146,7 +146,11 @@ class ConfigViewController: NSViewController {
   @objc func browseForShader() {
     let openPanel = NSOpenPanel()
     openPanel.title = "Select Shader File"
-    openPanel.allowedContentTypes = [.init(filenameExtension: "slang")!]
+    // Allow both .slang shader files and .slangp preset files
+    openPanel.allowedContentTypes = [
+      .init(filenameExtension: "slang")!,
+      .init(filenameExtension: "slangp")!
+    ]
     openPanel.allowsMultipleSelection = false
     openPanel.canChooseDirectories = false
     openPanel.canChooseFiles = true
