@@ -11,12 +11,22 @@ class MetalView: MTKView {
   }
 }
 
+// Uniforms struct that matches Slang's expected layout
+struct SlangUniforms {
+  var screenSize: vector_float2
+  var mousePosition: vector_float2
+  var time: Float
+  var _padding: Float = 0  // Alignment padding
+}
+
 class MetalRenderer {
   private let device: MTLDevice
   private let commandQueue: MTLCommandQueue
   private var textureCache: CVMetalTextureCache!
   private var activeEffectSource: String? = nil
   private var renderPipeline: MTLRenderPipelineState? = nil
+  private var activeShaderLanguage: ShaderLanguage = .metal
+  private var samplerState: MTLSamplerState!
   private let baseTime = ProcessInfo.processInfo.systemUptime
 
   init(metalLayer: CAMetalLayer) {
@@ -44,6 +54,14 @@ class MetalRenderer {
     } else {
       fatalError("Could not create CVMetalTextureCache.")
     }
+    
+    // Create a sampler state for Slang shaders
+    let samplerDescriptor = MTLSamplerDescriptor()
+    samplerDescriptor.minFilter = .linear
+    samplerDescriptor.magFilter = .linear
+    samplerDescriptor.sAddressMode = .clampToEdge
+    samplerDescriptor.tAddressMode = .clampToEdge
+    self.samplerState = self.device.makeSamplerState(descriptor: samplerDescriptor)
   }
 
   /// Build a render pipeline from Metal shader effect source
@@ -177,20 +195,23 @@ class MetalRenderer {
         ])
     }
     
-    // Build the complete Metal library source with the Slang-generated fragment shader
-    // and our standard vertex shader
+    // Debug: print the generated Metal code
+    print("=== Slang-generated Metal code ===")
+    print(metalFragmentSource)
+    print("=== End Slang-generated Metal code ===")
+    
+    // Slang generates a complete Metal file with its own includes.
+    // We need to add our vertex shader to it, but avoid duplicate includes.
+    // Strip the Slang includes and add our vertex shader after.
+    
+    // The Slang output already has the fragment shader, we just need to add vertex shader
     let librarySource = """
-      #include <metal_stdlib>
-      using namespace metal;
-      
-      // ========== Slang-generated fragment shader code ==========
       \(metalFragmentSource)
-      // ========== End Slang-generated code ==========
       
-      // Vertex shader (always Metal, as Slang only generates the fragment shader)
+      // ========== ScreenShader Vertex Shader ==========
       struct VertexOut {
         float4 position [[position]];
-        float2 texCoord;
+        float2 texCoord [[user(TEXCOORD)]];
       };
       
       vertex VertexOut vertex_main(uint vertexId [[vertex_id]]) {
@@ -212,15 +233,19 @@ class MetalRenderer {
       }
       """
     
-    let library = try device.makeLibrary(source: librarySource, options: nil)
+    let library: MTLLibrary
+    do {
+      library = try device.makeLibrary(source: librarySource, options: nil)
+    } catch {
+      throw NSError(
+        domain: "MetalRenderer", code: 4,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Metal compilation failed: \(error.localizedDescription)"
+        ])
+    }
     
     let vertexFunction = library.makeFunction(name: "vertex_main")
-    // The Slang-generated fragment function - look for fragmentMain (Slang naming)
-    var fragmentFunction = library.makeFunction(name: "fragmentMain")
-    // Fallback to main if fragmentMain not found (some Slang versions)
-    if fragmentFunction == nil {
-      fragmentFunction = library.makeFunction(name: "main")
-    }
+    let fragmentFunction = library.makeFunction(name: "fragmentMain")
     
     guard vertexFunction != nil && fragmentFunction != nil else {
       throw NSError(
@@ -242,9 +267,11 @@ class MetalRenderer {
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
       self.renderPipeline = nil
+      self.activeShaderLanguage = .metal
       return
     }
     self.activeEffectSource = effectSource
+    self.activeShaderLanguage = language
     do {
       self.renderPipeline = try Self.buildRenderPipeline(
         device: self.device, effectSource: effectSource, language: language)
@@ -313,10 +340,23 @@ class MetalRenderer {
 
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setFragmentTexture(texture, index: 0)
-        encoder.setFragmentBytes(&screenSize, length: MemoryLayout<vector_float2>.stride, index: 0)
-        encoder.setFragmentBytes(
-          &mousePosition, length: MemoryLayout<vector_float2>.stride, index: 1)
-        encoder.setFragmentBytes(&time, length: MemoryLayout<Float>.stride, index: 2)
+        
+        if self.activeShaderLanguage == .slang {
+          // Slang shaders expect a Uniforms struct at buffer(0) and a sampler
+          var uniforms = SlangUniforms(
+            screenSize: screenSize,
+            mousePosition: mousePosition,
+            time: time
+          )
+          encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
+          encoder.setFragmentSamplerState(self.samplerState, index: 0)
+        } else {
+          // Metal shaders use separate buffer bindings
+          encoder.setFragmentBytes(&screenSize, length: MemoryLayout<vector_float2>.stride, index: 0)
+          encoder.setFragmentBytes(
+            &mousePosition, length: MemoryLayout<vector_float2>.stride, index: 1)
+          encoder.setFragmentBytes(&time, length: MemoryLayout<Float>.stride, index: 2)
+        }
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       }

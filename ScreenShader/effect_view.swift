@@ -4,6 +4,27 @@ class SourceTextView: NSTextView {
   override func insertTab(_ sender: Any?) {
     self.insertText("  ", replacementRange: self.selectedRange())
   }
+  
+  // Disable the context menu to prevent Metal library loading crash
+  override func menu(for event: NSEvent) -> NSMenu? {
+    return nil
+  }
+  
+  // Override performKeyEquivalent to handle Cmd key events without triggering system UI
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    // Let standard text editing shortcuts through (Cmd+C, Cmd+V, etc.)
+    if event.modifierFlags.contains(.command) {
+      let key = event.charactersIgnoringModifiers ?? ""
+      switch key {
+      case "c", "v", "x", "a", "z", "s":
+        return super.performKeyEquivalent(with: event)
+      default:
+        // Consume other Cmd key events to prevent system UI crashes
+        return true
+      }
+    }
+    return super.performKeyEquivalent(with: event)
+  }
 }
 
 class EffectViewController: NSViewController, NSTextFieldDelegate, NSTextViewDelegate {

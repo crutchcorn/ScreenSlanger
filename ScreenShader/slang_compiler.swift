@@ -144,11 +144,18 @@ class SlangCompiler {
         
         // Shader input structure matching ScreenShader's ShaderInput
         struct ShaderInput {
+            Texture2D<float4> inputTexture;
+            SamplerState sampler;
             float2 texCoord;
             float2 screenPosition;
             float2 screenSize;
             float2 mousePosition;
             float time;
+            
+            // Method to sample the input texture
+            float4 sample(float2 uv) {
+                return inputTexture.Sample(sampler, uv);
+            }
         };
         
         // Utility functions
@@ -184,6 +191,8 @@ class SlangCompiler {
         [shader("fragment")]
         FragmentOutput fragmentMain(FragmentInput input) {
             ShaderInput shaderInput;
+            shaderInput.inputTexture = inputTexture;
+            shaderInput.sampler = textureSampler;
             shaderInput.texCoord = input.texCoord;
             shaderInput.screenSize = uniforms.screenSize;
             shaderInput.screenPosition = texToScreen(input.texCoord, uniforms.screenSize);
