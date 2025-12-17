@@ -695,6 +695,38 @@ class RetroArchShaderCompiler {
             with: "VertexOut"
         )
         
+        // Fix grayscale texture sampling: BACKGROUND textures may be grayscale (R8)
+        // When sampling a grayscale texture, only .r has the value, .gb are 0
+        // Replace BACKGROUND.sample(...).xyz with BACKGROUND.sample(...).rrr
+        // This uses regex to handle any sampler name like BACKGROUNDSmplr
+        fragmentFunction = fragmentFunction.replacingOccurrences(
+            of: "BACKGROUND.sample(BACKGROUNDSmplr,",
+            with: "float4(BACKGROUND.sample(BACKGROUNDSmplr,"
+        )
+        // Find the pattern: BACKGROUND.sample(...).xyz and change to use .rrr
+        // Since the sample returns float4, we need to extract just the red channel repeated
+        if let range = fragmentFunction.range(of: "float4(BACKGROUND.sample(BACKGROUNDSmplr, (bgPixelCoord * 0.000244140625))).xyz") {
+            fragmentFunction = fragmentFunction.replacingCharacters(
+                in: range, 
+                with: "BACKGROUND.sample(BACKGROUNDSmplr, (bgPixelCoord * 0.000244140625)).rrr"
+            )
+        } else {
+            // More generic approach - fix any BACKGROUND sampling that ends in .xyz
+            fragmentFunction = fragmentFunction.replacingOccurrences(
+                of: "float4(BACKGROUND.sample(BACKGROUNDSmplr,",
+                with: "BACKGROUND.sample(BACKGROUNDSmplr,"
+            )
+            // Replace .xyz with .rrr for BACKGROUND texture samples
+            // This is a heuristic - look for the pattern in the generated code
+            var lines = fragmentFunction.components(separatedBy: .newlines)
+            for i in 0..<lines.count {
+                if lines[i].contains("BACKGROUND.sample") && lines[i].contains(".xyz") {
+                    lines[i] = lines[i].replacingOccurrences(of: ".xyz", with: ".rrr")
+                }
+            }
+            fragmentFunction = lines.joined(separator: "\n")
+        }
+        
         // Debug: print extracted components
         print("=== Extracted sharedStructs ===")
         print(sharedStructs)

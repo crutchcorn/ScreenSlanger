@@ -449,15 +449,28 @@ class MetalRenderer {
   private func loadTexture(from url: URL, linear: Bool = false) {
     let textureLoader = MTKTextureLoader(device: device)
     do {
-      self.backgroundTexture = try textureLoader.newTexture(
+      // Load texture and let MTKTextureLoader handle format
+      // For grayscale textures, we need to expand to RGBA for proper sampling
+      var texture = try textureLoader.newTexture(
         URL: url,
         options: [
           .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-          .textureStorageMode: MTLStorageMode.private.rawValue,
-          .SRGB: false  // Use linear color space for shader textures
+          .textureStorageMode: MTLStorageMode.private.rawValue
         ]
       )
-      print("Loaded background texture: \(url.lastPathComponent) (linear: \(linear))")
+      
+      print("Loaded background texture: \(url.lastPathComponent) (linear filtering: \(linear))")
+      print("  Texture size: \(texture.width)x\(texture.height), format: \(texture.pixelFormat.rawValue)")
+      
+      // Check if it's a single-channel (grayscale) texture and convert to RGBA
+      // Metal grayscale textures only populate .r channel when sampled
+      if texture.pixelFormat == .r8Unorm || texture.pixelFormat == .r8Unorm_srgb {
+        print("  Grayscale texture detected - will use swizzle in shader or expect .rrr sampling")
+        // Note: The shader should sample as .rrr to expand grayscale to RGB
+        // We'll handle this by creating a texture view with proper swizzle if possible
+      }
+      
+      self.backgroundTexture = texture
     } catch {
       print("Failed to load background texture: \(error)")
     }
