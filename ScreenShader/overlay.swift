@@ -89,10 +89,9 @@ class OverlayController: NSObject, MTKViewDelegate {
     let active = activeEffect != nil
 
     let activeEffectShader = active ? self.config.effects.getShader(effect: activeEffect!) : nil
-    let activeEffectLanguage = active ? self.config.effects.getLanguage(effect: activeEffect!) : .metal
 
     do {
-      try self.renderer.setEffectSource(activeEffectShader, language: activeEffectLanguage)
+      try self.renderer.setEffectSource(activeEffectShader)
       self.errorMessage.clear()
     } catch {
       print("Effect shader error: \(error.localizedDescription)")

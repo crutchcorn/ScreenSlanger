@@ -25,7 +25,6 @@ class MetalRenderer {
   private var textureCache: CVMetalTextureCache!
   private var activeEffectSource: String? = nil
   private var renderPipeline: MTLRenderPipelineState? = nil
-  private var activeShaderLanguage: ShaderLanguage = .metal
   private var samplerState: MTLSamplerState!
   private let baseTime = ProcessInfo.processInfo.systemUptime
 
@@ -64,120 +63,8 @@ class MetalRenderer {
     self.samplerState = self.device.makeSamplerState(descriptor: samplerDescriptor)
   }
 
-  /// Build a render pipeline from Metal shader effect source
-  static func buildRenderPipeline(device: MTLDevice, effectSource: String, language: ShaderLanguage = .metal) throws
-    -> MTLRenderPipelineState
-  {
-    switch language {
-    case .metal:
-      return try buildMetalRenderPipeline(device: device, effectSource: effectSource)
-    case .slang:
-      return try buildSlangRenderPipeline(device: device, effectSource: effectSource)
-    }
-  }
-
-  /// Build a render pipeline from Metal shader effect source
-  private static func buildMetalRenderPipeline(device: MTLDevice, effectSource: String) throws
-    -> MTLRenderPipelineState
-  {
-    let librarySource = """
-      #include <metal_stdlib>
-      using namespace metal;
-
-      struct ShaderInput {
-        // A texture containing the input screen capture data.
-        texture2d<float> inputTexture;
-        // The texture coordinates for indexing into inputTexture at the current
-        // position. The origin is at the top left of the screen.
-        float2 texCoord;
-        // The current position in pixels, with (0, 0) at the bottom left of the
-        // screen.
-        float2 screenPosition;
-        // The screen size in pixels.
-        float2 screenSize;
-        // The current position of the mouse cursor in pixels, with (0, 0) at
-        // the bottom left of the screen.
-        float2 mousePosition;
-        // The elapsed time since the system started in seconds.
-        float time;
-      };
-
-      float2 texToScreen(float2 texCoord, float2 screenSize) {
-        return float2(texCoord.x * screenSize.x, (1 - texCoord.y) * screenSize.y);
-      }
-
-      float2 screenToTex(float2 screenPosition, float2 screenSize) {
-        return float2(screenPosition.x / screenSize.x, 1 - screenPosition.y / screenSize.y);
-      }
-
-      \(effectSource)
-
-      struct VertexOut {
-        float4 position [[position]];
-        float2 texCoord;
-      };
-
-      vertex VertexOut vertex_main(uint vertexId [[vertex_id]]) {
-        float2 quadVertices[6] = {
-          float2(-1.0, -1.0),
-          float2( 1.0, -1.0),
-          float2(-1.0,  1.0),
-          float2(-1.0,  1.0),
-          float2( 1.0, -1.0),
-          float2( 1.0,  1.0)
-        };
-
-        VertexOut out;
-        out.position = float4(quadVertices[vertexId], 0.0, 1.0);
-        out.texCoord = float2(
-          (quadVertices[vertexId].x + 1.0) * 0.5,
-          (-quadVertices[vertexId].y + 1.0) * 0.5);
-        return out;
-      }
-
-      fragment float4 fragment_main(
-        VertexOut in [[stage_in]],
-        texture2d<float> inTexture [[texture(0)]],
-        constant float2 *screenSize [[buffer(0)]],
-        constant float2 *mousePosition [[buffer(1)]],
-        constant float *time [[buffer(2)]]
-      ) {
-        ShaderInput shaderInput;
-        shaderInput.inputTexture = inTexture;
-        shaderInput.texCoord = in.texCoord;
-        shaderInput.screenPosition = texToScreen(in.texCoord, *screenSize);
-        shaderInput.screenSize = *screenSize;
-        shaderInput.mousePosition = *mousePosition;
-        shaderInput.time = *time;
-
-        return shaderFunction(shaderInput);
-      }
-      """
-
-    let library = try device.makeLibrary(source: librarySource, options: nil)
-
-    let vertexFunction = library.makeFunction(name: "vertex_main")
-    let fragmentFunction = library.makeFunction(name: "fragment_main")
-
-    guard vertexFunction != nil && fragmentFunction != nil else {
-      throw NSError(
-        domain: "MetalRenderer", code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Could not find vertex_main or fragment_main in effect source."
-        ])
-    }
-
-    let pipelineDescriptor = MTLRenderPipelineDescriptor()
-    pipelineDescriptor.vertexFunction = vertexFunction
-    pipelineDescriptor.fragmentFunction = fragmentFunction
-    pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-
-    return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-  }
-  
   /// Build a render pipeline from Slang shader effect source
-  /// This compiles the Slang code to Metal, then builds the pipeline
-  private static func buildSlangRenderPipeline(device: MTLDevice, effectSource: String) throws
+  static func buildRenderPipeline(device: MTLDevice, effectSource: String) throws
     -> MTLRenderPipelineState
   {
     // Wrap the user's effect code in the Slang framework
@@ -263,18 +150,16 @@ class MetalRenderer {
     return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
   }
 
-  func setEffectSource(_ effectSource: String?, language: ShaderLanguage = .metal) throws {
+  func setEffectSource(_ effectSource: String?) throws {
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
       self.renderPipeline = nil
-      self.activeShaderLanguage = .metal
       return
     }
     self.activeEffectSource = effectSource
-    self.activeShaderLanguage = language
     do {
       self.renderPipeline = try Self.buildRenderPipeline(
-        device: self.device, effectSource: effectSource, language: language)
+        device: self.device, effectSource: effectSource)
     } catch {
       self.renderPipeline = nil
       throw error
@@ -341,22 +226,14 @@ class MetalRenderer {
         encoder.setRenderPipelineState(renderPipeline)
         encoder.setFragmentTexture(texture, index: 0)
         
-        if self.activeShaderLanguage == .slang {
-          // Slang shaders expect a Uniforms struct at buffer(0) and a sampler
-          var uniforms = SlangUniforms(
-            screenSize: screenSize,
-            mousePosition: mousePosition,
-            time: time
-          )
-          encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
-          encoder.setFragmentSamplerState(self.samplerState, index: 0)
-        } else {
-          // Metal shaders use separate buffer bindings
-          encoder.setFragmentBytes(&screenSize, length: MemoryLayout<vector_float2>.stride, index: 0)
-          encoder.setFragmentBytes(
-            &mousePosition, length: MemoryLayout<vector_float2>.stride, index: 1)
-          encoder.setFragmentBytes(&time, length: MemoryLayout<Float>.stride, index: 2)
-        }
+        // Slang shaders expect a Uniforms struct at buffer(0) and a sampler
+        var uniforms = SlangUniforms(
+          screenSize: screenSize,
+          mousePosition: mousePosition,
+          time: time
+        )
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
+        encoder.setFragmentSamplerState(self.samplerState, index: 0)
 
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       }

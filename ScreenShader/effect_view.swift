@@ -9,7 +9,6 @@ class EffectViewController: NSViewController, NSTextFieldDelegate {
   private var stackView: NSStackView! = nil
   private var nameField: NSTextField! = nil
   private var activeButton: NSButton! = nil
-  private var languageLabel: NSTextField! = nil
   private var deleteButton: NSButton! = nil
   private var shaderPathLabel: NSTextField! = nil
   private var shaderPathField: NSTextField! = nil
@@ -55,7 +54,7 @@ class EffectViewController: NSViewController, NSTextFieldDelegate {
     shaderPathStack.addArrangedSubview(self.shaderPathLabel)
     
     self.shaderPathField = NSTextField()
-    self.shaderPathField.placeholderString = "Select a .slang or .metal file..."
+    self.shaderPathField.placeholderString = "Select a .slang file..."
     self.shaderPathField.isEditable = false
     self.shaderPathField.focusRingType = .none
     self.shaderPathField.translatesAutoresizingMaskIntoConstraints = false
@@ -72,11 +71,6 @@ class EffectViewController: NSViewController, NSTextFieldDelegate {
     shaderPathStack.addArrangedSubview(self.reloadButton)
     
     self.stackView.addArrangedSubview(shaderPathStack)
-    
-    // Show current shader language
-    self.languageLabel = NSTextField(labelWithString: "Language: \(self.effects.getLanguage(effect: self.effect).displayName)")
-    self.languageLabel.translatesAutoresizingMaskIntoConstraints = false
-    self.stackView.addArrangedSubview(self.languageLabel)
     
     // Add Slang availability indicator
     if !SlangCompiler.isAvailable {
@@ -116,7 +110,7 @@ class EffectViewController: NSViewController, NSTextFieldDelegate {
   @objc func browseForShader() {
     let openPanel = NSOpenPanel()
     openPanel.title = "Select Shader File"
-    openPanel.allowedContentTypes = [.init(filenameExtension: "slang")!, .init(filenameExtension: "metal")!]
+    openPanel.allowedContentTypes = [.init(filenameExtension: "slang")!]
     openPanel.allowsMultipleSelection = false
     openPanel.canChooseDirectories = false
     openPanel.canChooseFiles = true
@@ -128,10 +122,6 @@ class EffectViewController: NSViewController, NSTextFieldDelegate {
         self.effects.setShaderPath(effect: self.effect, path: path)
         self.shaderPathField.stringValue = path
         self.reloadButton.isEnabled = true
-        
-        // Update language label based on file extension
-        let language = self.effects.getLanguage(effect: self.effect)
-        self.languageLabel.stringValue = "Language: \(language.displayName)"
         
         self.onUpdate()
       }
