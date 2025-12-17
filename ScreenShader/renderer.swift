@@ -145,10 +145,6 @@ class MetalRenderer {
       shaderDirectory: shaderDirectory
     )
     
-    print("=== RetroArch-generated Metal code ===")
-    print(compiled.metalSource)
-    print("=== End RetroArch-generated Metal code ===")
-    
     let library: MTLLibrary
     do {
       library = try device.makeLibrary(source: compiled.metalSource, options: nil)
@@ -206,11 +202,6 @@ class MetalRenderer {
           NSLocalizedDescriptionKey: "Slang compilation failed: \(error.localizedDescription)"
         ])
     }
-    
-    // Debug: print the generated Metal code
-    print("=== Slang-generated Metal code ===")
-    print(metalFragmentSource)
-    print("=== End Slang-generated Metal code ===")
     
     // Slang generates a complete Metal file with its own includes.
     // We need to add our vertex shader to it, but avoid duplicate includes.
@@ -319,11 +310,6 @@ class MetalRenderer {
         
         // Load background texture if the shader uses one
         loadBackgroundTextureIfNeeded(effectSource: effectSource)
-        
-        print("Loaded RetroArch shader with \(parameters.count) parameters")
-        for param in parameters {
-          print("  - \(param.name): \(param.description) [\(param.minValue) - \(param.maxValue), default: \(param.defaultValue)]")
-        }
       } catch {
         self.renderPipeline = nil
         self.activeShaderType = .none
@@ -357,10 +343,6 @@ class MetalRenderer {
     let shaderSource = try String(contentsOf: shaderURL, encoding: .utf8)
     self.activeEffectSource = shaderSource
     
-    print("Loaded preset from: \(presetPath)")
-    print("  Shader: \(preset.shaderPath)")
-    print("  Textures: \(preset.textures.map { $0.name }.joined(separator: ", "))")
-    
     // Compile the shader
     let (pipeline, parameters) = try Self.buildRetroArchPipeline(
       device: self.device,
@@ -389,15 +371,8 @@ class MetalRenderer {
       let textureURL = preset.resolvePath(texture.path)
       if texture.name == "BACKGROUND" {
         loadTexture(from: textureURL, linear: texture.linear)
-        print("  Loaded BACKGROUND texture: \(texture.path)")
       }
       // TODO: Support additional textures (would need to track by name)
-    }
-    
-    print("Loaded RetroArch shader with \(parameters.count) parameters")
-    for param in parameters {
-      let value = self.parameterState.getValue(for: param.name)
-      print("  - \(param.name): \(value) [\(param.minValue) - \(param.maxValue)]")
     }
   }
   
@@ -450,29 +425,16 @@ class MetalRenderer {
     let textureLoader = MTKTextureLoader(device: device)
     do {
       // Load texture and let MTKTextureLoader handle format
-      // For grayscale textures, we need to expand to RGBA for proper sampling
-      var texture = try textureLoader.newTexture(
+      let texture = try textureLoader.newTexture(
         URL: url,
         options: [
           .textureUsage: MTLTextureUsage.shaderRead.rawValue,
           .textureStorageMode: MTLStorageMode.private.rawValue
         ]
       )
-      
-      print("Loaded background texture: \(url.lastPathComponent) (linear filtering: \(linear))")
-      print("  Texture size: \(texture.width)x\(texture.height), format: \(texture.pixelFormat.rawValue)")
-      
-      // Check if it's a single-channel (grayscale) texture and convert to RGBA
-      // Metal grayscale textures only populate .r channel when sampled
-      if texture.pixelFormat == .r8Unorm || texture.pixelFormat == .r8Unorm_srgb {
-        print("  Grayscale texture detected - will use swizzle in shader or expect .rrr sampling")
-        // Note: The shader should sample as .rrr to expand grayscale to RGB
-        // We'll handle this by creating a texture view with proper swizzle if possible
-      }
-      
       self.backgroundTexture = texture
     } catch {
-      print("Failed to load background texture: \(error)")
+      // Silently fail - shader will use fallback
     }
   }
 

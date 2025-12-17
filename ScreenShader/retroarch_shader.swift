@@ -342,19 +342,6 @@ class RetroArchShaderCompiler {
         let vertexSource = vertexSharedLines.joined(separator: "\n") + "\n" + vertexLines.joined(separator: "\n")
         let fragmentSource = fragmentSharedLines.joined(separator: "\n") + "\n" + fragmentLines.joined(separator: "\n")
         
-        print("=== Preprocessed Shader ===")
-        print("Parameters found: \(parameters.map { $0.name })")
-        print("Samplers found: \(samplers.map { $0.name })")
-        print("Vertex lines: \(vertexLines.count), Fragment lines: \(fragmentLines.count), Shared lines: \(sharedLines.count)")
-        
-        print("\n=== VERTEX SOURCE ===")
-        print(vertexSource)
-        print("=== END VERTEX SOURCE ===\n")
-        
-        print("\n=== FRAGMENT SOURCE ===")
-        print(fragmentSource)
-        print("=== END FRAGMENT SOURCE ===\n")
-        
         return RetroArchShaderStages(
             vertexSource: vertexSource,
             fragmentSource: fragmentSource,
@@ -401,39 +388,25 @@ class RetroArchShaderCompiler {
     
     /// Compile a RetroArch shader source to Metal
     static func compileToMetal(source: String, shaderDirectory: URL? = nil) throws -> CompiledRetroArchShader {
-        print("=== RetroArchShaderCompiler.compileToMetal ===")
-        print("Source length: \(source.count) characters")
-        print("Shader directory: \(shaderDirectory?.path ?? "nil")")
-        
         guard let glslangPath = findGlslang() else {
-            print("ERROR: glslang not found!")
             throw RetroArchShaderError.glslangNotFound
         }
-        print("glslang found at: \(glslangPath)")
         
         guard let spirvCrossPath = findSpirvCross() else {
-            print("ERROR: spirv-cross not found!")
             throw RetroArchShaderError.spirvCrossNotFound
         }
-        print("spirv-cross found at: \(spirvCrossPath)")
         
         // Preprocess the shader
-        print("Preprocessing shader...")
         let stages = try preprocess(source)
-        
-        print("Vertex source length: \(stages.vertexSource.count)")
-        print("Fragment source length: \(stages.fragmentSource.count)")
         
         // Create temp directory
         let tempDir = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        print("Temp directory: \(tempDir.path)")
         
         defer {
-            // Don't remove temp dir for debugging
-            print("Temp files preserved at: \(tempDir.path)")
-            // try? FileManager.default.removeItem(at: tempDir)
+            // Clean up temp files
+            try? FileManager.default.removeItem(at: tempDir)
         }
         
         // Compile vertex shader: GLSL -> SPIRV -> Metal
@@ -488,13 +461,6 @@ class RetroArchShaderCompiler {
         // Write GLSL source
         try source.write(to: inputFile, atomically: true, encoding: .utf8)
         
-        // Debug: print the source being compiled
-        print("=== Compiling \(stage) shader ===")
-        print("Source file: \(inputFile.path)")
-        print("First 500 chars of source:")
-        print(String(source.prefix(500)))
-        print("===")
-        
         // Step 1: GLSL -> SPIRV using glslangValidator
         let glslangProcess = Process()
         glslangProcess.executableURL = URL(fileURLWithPath: glslangPath)
@@ -510,8 +476,6 @@ class RetroArchShaderCompiler {
         if let dir = shaderDirectory {
             glslangProcess.arguments?.insert("-I\(dir.path)", at: 1)
         }
-        
-        print("Running: \(glslangPath) \(glslangProcess.arguments?.joined(separator: " ") ?? "")")
         
         // Use file-based output capture for more reliable error capture
         let glslangStdoutFile = tempDir.appendingPathComponent("glslang_stdout.txt")
@@ -538,14 +502,6 @@ class RetroArchShaderCompiler {
         
         let stdoutMessage = (try? String(contentsOf: glslangStdoutFile, encoding: .utf8)) ?? ""
         let stderrMessage = (try? String(contentsOf: glslangStderrFile, encoding: .utf8)) ?? ""
-        
-        print("glslang exit code: \(glslangProcess.terminationStatus)")
-        if !stdoutMessage.isEmpty {
-            print("glslang stdout: \(stdoutMessage)")
-        }
-        if !stderrMessage.isEmpty {
-            print("glslang stderr: \(stderrMessage)")
-        }
         
         if glslangProcess.terminationStatus != 0 {
             let combinedError = [stdoutMessage, stderrMessage]
@@ -726,15 +682,6 @@ class RetroArchShaderCompiler {
             }
             fragmentFunction = lines.joined(separator: "\n")
         }
-        
-        // Debug: print extracted components
-        print("=== Extracted sharedStructs ===")
-        print(sharedStructs)
-        print("=== Extracted fragmentOutStruct ===")
-        print(fragmentOutStruct)
-        print("=== Extracted fragmentFunction ===")
-        print(fragmentFunction)
-        print("=== End extraction debug ===")
         
         // Build combined shader with custom vertex shader
         let combined = """
