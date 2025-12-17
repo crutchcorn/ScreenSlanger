@@ -88,8 +88,11 @@ class OverlayController: NSObject, MTKViewDelegate {
     let activeShader = self.config.active ? self.config.getShader() : nil
 
     do {
-      try self.renderer.setEffectSource(activeShader)
+      try self.renderer.setEffectSource(activeShader, shaderPath: self.config.shaderPath)
       self.errorMessage.clear()
+      
+      // Apply stored parameter values from config
+      self.config.applyStoredParameters(to: self.renderer.parameterState)
     } catch {
       print("Effect shader error: \(error.localizedDescription)")
       self.errorMessage.set(error.localizedDescription)
@@ -101,5 +104,15 @@ class OverlayController: NSObject, MTKViewDelegate {
 
     self.window.setIsVisible(true)
     self.screenCapture.setCapturing(true)
+  }
+  
+  /// Get the current parameter state from the renderer
+  func getParameterState() -> ShaderParameterState? {
+    return self.renderer.parameterState
+  }
+  
+  /// Set a parameter value on the renderer
+  func setParameterValue(name: String, value: Float) {
+    self.renderer.parameterState.setValue(value, for: name)
   }
 }

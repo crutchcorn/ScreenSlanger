@@ -4,6 +4,8 @@ class ConfigViewController: NSViewController {
   var config: Config! = nil
   var onConfigUpdate: () -> Void = {}
   var errorMessage: ErrorMessage! = nil
+  var parameterState: ShaderParameterState? = nil
+  var onParameterChanged: ((String, Float) -> Void)? = nil
 
   private var stackView: NSStackView! = nil
   private var shaderPathField: NSTextField! = nil
@@ -11,6 +13,11 @@ class ConfigViewController: NSViewController {
   private var activateButton: NSButton! = nil
   private var reloadButton: NSButton! = nil
   private var errorMessageField: NSTextField! = nil
+  
+  // Parameter controls
+  private var parametersSection: NSStackView? = nil
+  private var parameterSliders: [String: NSSlider] = [:]
+  private var parameterLabels: [String: NSTextField] = [:]
 
   override func loadView() {
     self.view = NSView()
@@ -82,6 +89,23 @@ class ConfigViewController: NSViewController {
       self.stackView.addArrangedSubview(warningLabel)
     }
     
+    // Add RetroArch tools availability indicator
+    if !RetroArchShaderCompiler.isAvailable {
+      let missing = RetroArchShaderCompiler.missingTools.joined(separator: "\n")
+      let warningLabel = NSTextField(labelWithString: "⚠️ RetroArch shader tools missing:\n\(missing)")
+      warningLabel.textColor = .systemOrange
+      warningLabel.translatesAutoresizingMaskIntoConstraints = false
+      self.stackView.addArrangedSubview(warningLabel)
+    }
+    
+    // Shader parameters section (populated dynamically)
+    self.parametersSection = NSStackView()
+    self.parametersSection?.orientation = .vertical
+    self.parametersSection?.spacing = 8
+    self.parametersSection?.alignment = .leading
+    self.parametersSection?.translatesAutoresizingMaskIntoConstraints = false
+    self.stackView.addArrangedSubview(self.parametersSection!)
+    
     // Error message field
     self.errorMessageField = NSTextField()
     self.errorMessageField.isEditable = false
@@ -149,6 +173,137 @@ class ConfigViewController: NSViewController {
   func refreshUI() {
     self.activateButton.title = self.getActivateButtonTitle()
     self.activateButton.isEnabled = self.config.hasShaderPath()
+    self.updateParameterUI()
+  }
+  
+  /// Update parameter sliders when shader changes
+  func updateParameterUI() {
+    // Remove existing parameter controls
+    self.parametersSection?.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    self.parameterSliders.removeAll()
+    self.parameterLabels.removeAll()
+    
+    guard let state = self.parameterState, !state.parameters.isEmpty else {
+      return
+    }
+    
+    // Add header
+    let headerLabel = NSTextField(labelWithString: "Shader Parameters")
+    headerLabel.font = NSFont.boldSystemFont(ofSize: 14)
+    headerLabel.translatesAutoresizingMaskIntoConstraints = false
+    self.parametersSection?.addArrangedSubview(headerLabel)
+    
+    // Add a slider for each parameter
+    for param in state.parameters {
+      let paramStack = NSStackView()
+      paramStack.orientation = .horizontal
+      paramStack.spacing = 8
+      paramStack.alignment = .centerY
+      paramStack.translatesAutoresizingMaskIntoConstraints = false
+      
+      // Parameter name label
+      let nameLabel = NSTextField(labelWithString: param.description)
+      nameLabel.translatesAutoresizingMaskIntoConstraints = false
+      nameLabel.toolTip = param.name
+      paramStack.addArrangedSubview(nameLabel)
+      
+      // Slider
+      let slider = NSSlider(value: Double(state.getValue(for: param.name)),
+                            minValue: Double(param.minValue),
+                            maxValue: Double(param.maxValue),
+                            target: self,
+                            action: #selector(parameterSliderChanged(_:)))
+      slider.translatesAutoresizingMaskIntoConstraints = false
+      slider.identifier = NSUserInterfaceItemIdentifier(param.name)
+      slider.isContinuous = true
+      paramStack.addArrangedSubview(slider)
+      
+      // Value label
+      let valueLabel = NSTextField(labelWithString: String(format: "%.2f", state.getValue(for: param.name)))
+      valueLabel.translatesAutoresizingMaskIntoConstraints = false
+      valueLabel.isEditable = false
+      paramStack.addArrangedSubview(valueLabel)
+      
+      // Reset button
+      let resetButton = NSButton(title: "↺", target: self, action: #selector(resetParameter(_:)))
+      resetButton.identifier = NSUserInterfaceItemIdentifier(param.name)
+      resetButton.toolTip = "Reset to default (\(param.defaultValue))"
+      resetButton.bezelStyle = .inline
+      paramStack.addArrangedSubview(resetButton)
+      
+      self.parameterSliders[param.name] = slider
+      self.parameterLabels[param.name] = valueLabel
+      
+      self.parametersSection?.addArrangedSubview(paramStack)
+      
+      // Add width constraints
+      NSLayoutConstraint.activate([
+        nameLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
+        slider.widthAnchor.constraint(equalToConstant: 200),
+        valueLabel.widthAnchor.constraint(equalToConstant: 50)
+      ])
+    }
+    
+    // Add "Reset All" button
+    let resetAllButton = NSButton(title: "Reset All Parameters", target: self, action: #selector(resetAllParameters))
+    resetAllButton.translatesAutoresizingMaskIntoConstraints = false
+    self.parametersSection?.addArrangedSubview(resetAllButton)
+  }
+  
+  @objc func parameterSliderChanged(_ sender: NSSlider) {
+    guard let paramName = sender.identifier?.rawValue else { return }
+    let value = Float(sender.doubleValue)
+    
+    // Update the value label
+    if let label = parameterLabels[paramName] {
+      label.stringValue = String(format: "%.2f", value)
+    }
+    
+    // Update the parameter state
+    parameterState?.setValue(value, for: paramName)
+    
+    // Save to config
+    config.setParameterValue(name: paramName, value: value)
+    
+    // Notify the renderer
+    onParameterChanged?(paramName, value)
+  }
+  
+  @objc func resetParameter(_ sender: NSButton) {
+    guard let paramName = sender.identifier?.rawValue,
+          let param = parameterState?.parameters.first(where: { $0.name == paramName }) else { return }
+    
+    let defaultValue = param.defaultValue
+    parameterState?.setValue(defaultValue, for: paramName)
+    
+    if let slider = parameterSliders[paramName] {
+      slider.doubleValue = Double(defaultValue)
+    }
+    if let label = parameterLabels[paramName] {
+      label.stringValue = String(format: "%.2f", defaultValue)
+    }
+    
+    config.setParameterValue(name: paramName, value: defaultValue)
+    onParameterChanged?(paramName, defaultValue)
+  }
+  
+  @objc func resetAllParameters() {
+    guard let state = parameterState else { return }
+    
+    for param in state.parameters {
+      let defaultValue = param.defaultValue
+      state.setValue(defaultValue, for: param.name)
+      
+      if let slider = parameterSliders[param.name] {
+        slider.doubleValue = Double(defaultValue)
+      }
+      if let label = parameterLabels[param.name] {
+        label.stringValue = String(format: "%.2f", defaultValue)
+      }
+      
+      config.setParameterValue(name: param.name, value: defaultValue)
+      onParameterChanged?(param.name, defaultValue)
+    }
   }
 }
 
@@ -156,6 +311,8 @@ class ConfigWindowController: NSWindowController {
   var config: Config! = nil
   var errorMessage: ErrorMessage! = nil
   var onConfigUpdate: () -> Void = {}
+  var parameterState: ShaderParameterState? = nil
+  var onParameterChanged: ((String, Float) -> Void)? = nil
 
   private var configViewController: ConfigViewController! = ConfigViewController()
 
@@ -167,6 +324,8 @@ class ConfigWindowController: NSWindowController {
     self.configViewController.config = self.config
     self.configViewController.onConfigUpdate = self.onConfigUpdate
     self.configViewController.errorMessage = self.errorMessage
+    self.configViewController.parameterState = self.parameterState
+    self.configViewController.onParameterChanged = self.onParameterChanged
     window.contentView?.addSubview(self.configViewController.view)
 
     NSLayoutConstraint.activate([
@@ -182,5 +341,11 @@ class ConfigWindowController: NSWindowController {
 
   func refreshActiveEffects() {
     self.configViewController.refreshUI()
+  }
+  
+  func updateParameterState(_ state: ShaderParameterState?) {
+    self.parameterState = state
+    self.configViewController.parameterState = state
+    self.configViewController.updateParameterUI()
   }
 }

@@ -44,10 +44,13 @@ let defaultShaderSource: String = """
   """
 
 class Config: Codable {
-  var configVersion: Int = 2
+  var configVersion: Int = 3  // Bumped for parameter support
   var shaderPath: String? = nil
   var active: Bool = false
   var targetFPS: Int = 60
+  
+  /// Stored parameter values for RetroArch shaders, keyed by shader path then parameter name
+  var shaderParameters: [String: [String: Float]] = [:]
 
   static func getFileURL() -> URL {
     let fileManager = FileManager.default
@@ -121,6 +124,44 @@ class Config: Codable {
       active = !active
     } else {
       active = false
+    }
+  }
+  
+  // MARK: - Shader Parameter Management
+  
+  /// Get stored parameter value for current shader
+  func getParameterValue(name: String) -> Float? {
+    guard let path = shaderPath else { return nil }
+    return shaderParameters[path]?[name]
+  }
+  
+  /// Set parameter value for current shader
+  func setParameterValue(name: String, value: Float) {
+    guard let path = shaderPath else { return }
+    if shaderParameters[path] == nil {
+      shaderParameters[path] = [:]
+    }
+    shaderParameters[path]?[name] = value
+  }
+  
+  /// Get all stored parameter values for current shader
+  func getParameterValues() -> [String: Float] {
+    guard let path = shaderPath else { return [:] }
+    return shaderParameters[path] ?? [:]
+  }
+  
+  /// Apply stored values to a parameter state
+  func applyStoredParameters(to state: ShaderParameterState) {
+    let stored = getParameterValues()
+    for (name, value) in stored {
+      state.setValue(value, for: name)
+    }
+  }
+  
+  /// Save current parameter state to config
+  func saveParameters(from state: ShaderParameterState) {
+    for param in state.parameters {
+      setParameterValue(name: param.name, value: state.getValue(for: param.name))
     }
   }
 }

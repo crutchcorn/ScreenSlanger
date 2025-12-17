@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		4159FE622D497D4600B79670 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4159FE612D497D4600B79670 /* Assets.xcassets */; };
+		9736AA952EF210C2002DDC37 /* retroarch_shader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9736AA962EF210C2002DDC37 /* retroarch_shader.swift */; };
 		416975F62D497E21004C8E93 /* metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975EC2D497E21004C8E93 /* metrics.swift */; };
 		416975F72D497E21004C8E93 /* config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975ED2D497E21004C8E93 /* config.swift */; };
 		416975F82D497E21004C8E93 /* screen_capture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975EE2D497E21004C8E93 /* screen_capture.swift */; };
@@ -40,6 +41,7 @@
 		41C290E02D4AC88E00675317 /* toggle.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = toggle.png; sourceTree = "<group>"; };
 		41C290E12D4AC88E00675317 /* select_activate.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = select_activate.png; sourceTree = "<group>"; };
 		9736AA932EF210C1002DDC37 /* slang_compiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = slang_compiler.swift; sourceTree = "<group>"; };
+		9736AA962EF210C2002DDC37 /* retroarch_shader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = retroarch_shader.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -86,6 +88,7 @@
 				416975F42D497E21004C8E93 /* main.swift */,
 				416975EC2D497E21004C8E93 /* metrics.swift */,
 				9736AA932EF210C1002DDC37 /* slang_compiler.swift */,
+				9736AA962EF210C2002DDC37 /* retroarch_shader.swift */,
 				416975F22D497E21004C8E93 /* overlay.swift */,
 				416975EF2D497E21004C8E93 /* renderer.swift */,
 				416975EE2D497E21004C8E93 /* screen_capture.swift */,
@@ -187,6 +190,7 @@
 				416975FD2D497E21004C8E93 /* error_message.swift in Sources */,
 				416975F92D497E21004C8E93 /* renderer.swift in Sources */,
 				9736AA942EF210C1002DDC37 /* slang_compiler.swift in Sources */,
+				9736AA952EF210C2002DDC37 /* retroarch_shader.swift in Sources */,
 				416975FA2D497E21004C8E93 /* config_view.swift in Sources */,
 				416975F62D497E21004C8E93 /* metrics.swift in Sources */,
 			);

@@ -21,6 +21,64 @@ enum SlangCompilerError: Error, LocalizedError {
     }
 }
 
+/// Represents a shader parameter parsed from #pragma parameter directives
+/// Format: #pragma parameter NAME "Description" default min max step
+struct ShaderParameter {
+    let name: String
+    let description: String
+    let defaultValue: Float
+    let minValue: Float
+    let maxValue: Float
+    let stepValue: Float
+    
+    /// Parse a #pragma parameter line
+    /// Example: #pragma parameter DARKEN_COLOUR "Darken Colours" 0.0 0.0 2.0 0.05
+    static func parse(from line: String) -> ShaderParameter? {
+        // Remove the #pragma parameter prefix
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("#pragma parameter") else { return nil }
+        
+        let content = String(trimmed.dropFirst("#pragma parameter".count))
+            .trimmingCharacters(in: .whitespaces)
+        
+        // Parse: NAME "Description" default min max [step]
+        var scanner = Scanner(string: content)
+        scanner.charactersToBeSkipped = CharacterSet.whitespaces
+        
+        // Parse name
+        guard let name = scanner.scanUpToCharacters(from: .whitespaces) else { return nil }
+        
+        // Parse quoted description
+        guard scanner.scanString("\"") != nil else { return nil }
+        guard let description = scanner.scanUpToString("\"") else { return nil }
+        guard scanner.scanString("\"") != nil else { return nil }
+        
+        // Parse numeric values
+        guard let defaultValue = scanner.scanFloat() else { return nil }
+        guard let minValue = scanner.scanFloat() else { return nil }
+        guard let maxValue = scanner.scanFloat() else { return nil }
+        
+        // Step is optional
+        let stepValue = scanner.scanFloat() ?? 0.01
+        
+        return ShaderParameter(
+            name: name,
+            description: description,
+            defaultValue: defaultValue,
+            minValue: minValue,
+            maxValue: maxValue,
+            stepValue: stepValue
+        )
+    }
+}
+
+/// Result of preprocessing a RetroArch-style shader
+struct PreprocessedShader {
+    let source: String
+    let parameters: [ShaderParameter]
+    let isRetroArchStyle: Bool
+}
+
 /// Wrapper for the Slang shader compiler
 class SlangCompiler {
     

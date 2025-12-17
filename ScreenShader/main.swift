@@ -58,6 +58,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     self.overlayController.refreshConfig()
     self.configWindowController?.refreshActiveEffects()
+    
+    // Update parameter UI with new shader's parameters
+    self.updateParameterUI()
 
     // Indicate that the config should be saved to disk.
     self.configChanged = true
@@ -152,9 +155,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       self?.refreshConfig()
     }
     self.configWindowController!.errorMessage = self.errorMessage
+    self.configWindowController!.parameterState = self.overlayController.getParameterState()
+    self.configWindowController!.onParameterChanged = { [weak self] name, value in
+      self?.overlayController.setParameterValue(name: name, value: value)
+      self?.configChanged = true
+    }
     self.configWindowController!.createUI()
 
     window.makeKeyAndOrderFront(nil)
+  }
+  
+  private func updateParameterUI() {
+    self.configWindowController?.updateParameterState(self.overlayController.getParameterState())
   }
 }
 
