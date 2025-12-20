@@ -27,7 +27,8 @@ class SharedMetalResources {
   private(set) var parameterState: ShaderParameterState = ShaderParameterState()
   private var shaderDirectory: URL? = nil
   private var shaderPreset: ShaderPreset? = nil
-  private var backgroundTexture: MTLTexture? = nil
+  private var loadedTextures: [String: MTLTexture] = [:]  // Texture name -> texture
+  private var textureSamplers: [ShaderSampler] = []  // Parsed samplers from shader
   private var activeEffectSource: String? = nil
   
   private init() {
@@ -59,21 +60,45 @@ class SharedMetalResources {
     self.repeatSamplerState = self.device.makeSamplerState(descriptor: repeatSamplerDescriptor)!
   }
   
+  func getTexture(named name: String) -> MTLTexture? {
+    return loadedTextures[name]
+  }
+  
   func getBackgroundTexture() -> MTLTexture? {
-    return backgroundTexture
+    // For backwards compatibility, return first non-Source texture or BACKGROUND
+    return loadedTextures["BACKGROUND"] ?? loadedTextures.values.first
+  }
+  
+  func getTextureSamplers() -> [ShaderSampler] {
+    print("DEBUG: getTextureSamplers called on SharedMetalResources instance \(ObjectIdentifier(self)), returning \(textureSamplers.count) samplers")
+    return textureSamplers
   }
   
   private var currentShaderPath: String? = nil
   
   func setEffectSource(_ effectSource: String?, shaderPath: String? = nil) throws {
-    // Skip if shader hasn't changed
+    // Skip if shader hasn't changed and we already have a valid pipeline
+    // For preset files (.slangp), compare by path since the effectSource changes after loading
+    // But never skip if effectSource is nil (deactivation) or was nil (activation)
+    let isDeactivating = effectSource == nil
+    let wasDeactivated = activeEffectSource == nil
+    if !isDeactivating && !wasDeactivated && shaderPath == currentShaderPath && currentShaderPath != nil && renderPipeline != nil {
+      print("DEBUG: setEffectSource skipping (same path, already loaded)")
+      return
+    }
     if effectSource == activeEffectSource && shaderPath == currentShaderPath {
+      print("DEBUG: setEffectSource skipping (no change)")
       return
     }
     
-    // Reset preset
+    print("DEBUG: setEffectSource called with path: \(shaderPath ?? "nil"), effectSource length: \(effectSource?.count ?? 0)")
+    
+    // Reset state
     self.shaderPreset = nil
     self.currentShaderPath = shaderPath
+    self.loadedTextures.removeAll()
+    self.textureSamplers.removeAll()
+    print("DEBUG: setEffectSource cleared textureSamplers")
     
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
@@ -101,7 +126,7 @@ class SharedMetalResources {
     // Detect shader type and compile accordingly
     if RetroArchShaderCompiler.isRetroArchShader(effectSource) {
       // RetroArch-style shader
-      let (pipeline, parameters) = try MetalRenderer.buildRetroArchPipeline(
+      let (pipeline, parameters, samplers) = try MetalRenderer.buildRetroArchPipeline(
         device: self.device,
         effectSource: effectSource,
         shaderDirectory: self.shaderDirectory
@@ -111,9 +136,10 @@ class SharedMetalResources {
       self.parameterState = ShaderParameterState()
       self.parameterState.parameters = parameters
       self.parameterState.reset()
-      
-      // Load background texture if the shader uses one
-      loadBackgroundTextureIfNeeded(effectSource: effectSource)
+      self.textureSamplers = samplers
+      print("DEBUG: setEffectSource (standalone) stored \(samplers.count) samplers")
+      // Note: Standalone .slang files without a .slangp preset won't have textures loaded
+      // Textures are only loaded when defined in a .slangp preset file
     } else {
       // Standard Slang shader
       self.renderPipeline = try MetalRenderer.buildRenderPipeline(
@@ -137,7 +163,7 @@ class SharedMetalResources {
     self.activeEffectSource = shaderSource
     
     // Compile the shader
-    let (pipeline, parameters) = try MetalRenderer.buildRetroArchPipeline(
+    let (pipeline, parameters, samplers) = try MetalRenderer.buildRetroArchPipeline(
       device: self.device,
       effectSource: shaderSource,
       shaderDirectory: self.shaderDirectory
@@ -146,6 +172,8 @@ class SharedMetalResources {
     self.activeShaderType = .retroArch
     self.parameterState = ShaderParameterState()
     self.parameterState.parameters = parameters
+    self.textureSamplers = samplers
+    print("DEBUG: loadFromPreset on instance \(ObjectIdentifier(self)) stored \(samplers.count) samplers, textureSamplers now has \(self.textureSamplers.count)")
     
     // Apply parameter values from preset
     for (name, value) in preset.parameterValues {
@@ -159,60 +187,17 @@ class SharedMetalResources {
       }
     }
     
-    // Load textures from preset
+    // Load textures defined in the preset
     for texture in preset.textures {
       let textureURL = preset.resolvePath(texture.path)
-      if texture.name == "BACKGROUND" {
-        loadTexture(from: textureURL, linear: texture.linear)
+      if let loadedTexture = loadTexture(from: textureURL, linear: texture.linear) {
+        loadedTextures[texture.name] = loadedTexture
       }
     }
-  }
-  
-  /// Load background texture if the shader references BACKGROUND sampler
-  private func loadBackgroundTextureIfNeeded(effectSource: String) {
-    // Check if shader uses BACKGROUND texture
-    guard effectSource.contains("BACKGROUND") else {
-      self.backgroundTexture = nil
-      return
-    }
-    
-    // Look for background texture in shader directory
-    guard let shaderDir = self.shaderDirectory else {
-      print("Warning: Shader uses BACKGROUND texture but no shader directory specified")
-      return
-    }
-    
-    // Common background texture paths for RetroArch shaders
-    let textureNames = [
-      "background.png",
-      "beige_paper.png",
-      "textured_paper.png",
-      "white_plaster.png",
-      "bgnoise_lg.png"
-    ]
-    
-    let basePaths = [
-      shaderDir.appendingPathComponent("png/4k"),
-      shaderDir.appendingPathComponent("png/2k"),
-      shaderDir,
-      shaderDir.deletingLastPathComponent()
-    ]
-    
-    for basePath in basePaths {
-      for textureName in textureNames {
-        let path = basePath.appendingPathComponent(textureName)
-        if FileManager.default.fileExists(atPath: path.path) {
-          loadTexture(from: path)
-          return
-        }
-      }
-    }
-    
-    print("Warning: Could not find BACKGROUND texture for shader")
   }
   
   /// Load a texture from a file
-  private func loadTexture(from url: URL, linear: Bool = false) {
+  private func loadTexture(from url: URL, linear: Bool = false) -> MTLTexture? {
     let textureLoader = MTKTextureLoader(device: device)
     do {
       let texture = try textureLoader.newTexture(
@@ -222,9 +207,9 @@ class SharedMetalResources {
           .textureStorageMode: MTLStorageMode.private.rawValue
         ]
       )
-      self.backgroundTexture = texture
+      return texture
     } catch {
-      // Silently fail - shader will use fallback
+      return nil
     }
   }
 }
@@ -324,7 +309,7 @@ class MetalRenderer {
     device: MTLDevice,
     effectSource: String,
     shaderDirectory: URL?
-  ) throws -> (MTLRenderPipelineState, [ShaderParameter]) {
+  ) throws -> (MTLRenderPipelineState, [ShaderParameter], [ShaderSampler]) {
     let compiled = try RetroArchShaderCompiler.compileToMetal(
       source: effectSource,
       shaderDirectory: shaderDirectory
@@ -366,7 +351,7 @@ class MetalRenderer {
     pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
     
     let pipeline = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-    return (pipeline, compiled.parameters)
+    return (pipeline, compiled.parameters, compiled.samplers)
   }
 
   // MARK: - Standard Slang Pipeline Builder
@@ -531,8 +516,6 @@ class MetalRenderer {
 
     if let renderPipeline = shared.renderPipeline {
       encoder.setRenderPipelineState(renderPipeline)
-      encoder.setFragmentTexture(texture, index: 0)
-      encoder.setFragmentSamplerState(shared.samplerState, index: 0)
       
       switch shared.activeShaderType {
       case .retroArch:
@@ -543,19 +526,38 @@ class MetalRenderer {
           textureHeight: height
         )
         
-        // Set background texture and sampler if available (at index 1)
-        // Use repeat sampler for tiling background textures
-        if let bgTexture = shared.getBackgroundTexture() {
-          encoder.setFragmentTexture(bgTexture, index: 1)
-          encoder.setFragmentSamplerState(shared.repeatSamplerState, index: 1)
-        } else {
-          // Even if no background texture, we need a placeholder to avoid validation errors
-          // Use the source texture as a fallback
-          encoder.setFragmentTexture(texture, index: 1)
-          encoder.setFragmentSamplerState(shared.repeatSamplerState, index: 1)
+        // Bind all textures based on their Metal bindings (parsed from generated code)
+        let samplers = shared.getTextureSamplers()
+        print("DEBUG: Rendering with \(samplers.count) samplers")
+        
+        // If no samplers were parsed, fallback to binding Source at index 0
+        if samplers.isEmpty {
+          print("DEBUG: No samplers found, using fallback binding at index 0")
+          encoder.setFragmentTexture(texture, index: 0)
+          encoder.setFragmentSamplerState(shared.samplerState, index: 0)
+        }
+        
+        for sampler in samplers {
+          print("DEBUG: Binding sampler '\(sampler.name)' at index \(sampler.binding)")
+          if sampler.name == "Source" {
+            // Source is the screen capture texture
+            encoder.setFragmentTexture(texture, index: sampler.binding)
+            encoder.setFragmentSamplerState(shared.samplerState, index: sampler.binding)
+          } else if let loadedTexture = shared.getTexture(named: sampler.name) {
+            encoder.setFragmentTexture(loadedTexture, index: sampler.binding)
+            encoder.setFragmentSamplerState(shared.repeatSamplerState, index: sampler.binding)
+          } else {
+            // Use source texture as fallback to avoid validation errors
+            encoder.setFragmentTexture(texture, index: sampler.binding)
+            encoder.setFragmentSamplerState(shared.repeatSamplerState, index: sampler.binding)
+          }
         }
         
       case .slang:
+        // Slang shaders use fixed texture binding at index 0
+        encoder.setFragmentTexture(texture, index: 0)
+        encoder.setFragmentSamplerState(shared.samplerState, index: 0)
+        
         // Slang shaders expect a Uniforms struct at buffer(0)
         let screenSize = vector_float2(Float(self.screen.frame.width), Float(self.screen.frame.height))
         let mousePosition = vector_float2(

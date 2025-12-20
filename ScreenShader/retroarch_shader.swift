@@ -436,13 +436,50 @@ class RetroArchShaderCompiler {
             parameters: stages.parameters
         )
         
+        // Parse actual Metal texture bindings from generated code
+        // spirv-cross remaps bindings sequentially, so we need to extract the actual indices
+        let metalSamplers = parseMetalTextureBindings(from: fragmentMetal)
+        
         return CompiledRetroArchShader(
             metalSource: combinedMetal,
             vertexFunctionName: "vertex_main",
             fragmentFunctionName: "fragment_main",
             parameters: stages.parameters,
-            samplers: stages.samplers
+            samplers: metalSamplers
         )
+    }
+    
+    /// Parse texture bindings from generated Metal source
+    /// Looks for patterns like: texture2d<float> BACKGROUND [[texture(1)]]
+    private static func parseMetalTextureBindings(from metalSource: String) -> [ShaderSampler] {
+        var samplers: [ShaderSampler] = []
+        
+        // Match patterns like: texture2d<float> TextureName [[texture(N)]]
+        let pattern = #"texture2d<\w+>\s+(\w+)\s+\[\[texture\((\d+)\)\]\]"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            print("DEBUG: Failed to create regex for texture binding parsing")
+            return samplers
+        }
+        
+        let range = NSRange(metalSource.startIndex..., in: metalSource)
+        let matches = regex.matches(in: metalSource, range: range)
+        
+        print("DEBUG: parseMetalTextureBindings found \(matches.count) texture matches in \(metalSource.count) chars")
+        
+        for match in matches {
+            guard match.numberOfRanges >= 3,
+                  let nameRange = Range(match.range(at: 1), in: metalSource),
+                  let bindingRange = Range(match.range(at: 2), in: metalSource),
+                  let binding = Int(metalSource[bindingRange]) else {
+                continue
+            }
+            
+            let name = String(metalSource[nameRange])
+            print("DEBUG: Found texture '\(name)' at binding \(binding)")
+            samplers.append(ShaderSampler(name: name, binding: binding, set: 0))
+        }
+        
+        return samplers
     }
     
     /// Compile a single shader stage
