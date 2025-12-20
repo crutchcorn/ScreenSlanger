@@ -70,7 +70,6 @@ class SharedMetalResources {
   }
   
   func getTextureSamplers() -> [ShaderSampler] {
-    print("DEBUG: getTextureSamplers called on SharedMetalResources instance \(ObjectIdentifier(self)), returning \(textureSamplers.count) samplers")
     return textureSamplers
   }
   
@@ -83,22 +82,17 @@ class SharedMetalResources {
     let isDeactivating = effectSource == nil
     let wasDeactivated = activeEffectSource == nil
     if !isDeactivating && !wasDeactivated && shaderPath == currentShaderPath && currentShaderPath != nil && renderPipeline != nil {
-      print("DEBUG: setEffectSource skipping (same path, already loaded)")
       return
     }
     if effectSource == activeEffectSource && shaderPath == currentShaderPath {
-      print("DEBUG: setEffectSource skipping (no change)")
       return
     }
-    
-    print("DEBUG: setEffectSource called with path: \(shaderPath ?? "nil"), effectSource length: \(effectSource?.count ?? 0)")
     
     // Reset state
     self.shaderPreset = nil
     self.currentShaderPath = shaderPath
     self.loadedTextures.removeAll()
     self.textureSamplers.removeAll()
-    print("DEBUG: setEffectSource cleared textureSamplers")
     
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
@@ -137,7 +131,6 @@ class SharedMetalResources {
       self.parameterState.parameters = parameters
       self.parameterState.reset()
       self.textureSamplers = samplers
-      print("DEBUG: setEffectSource (standalone) stored \(samplers.count) samplers")
       // Note: Standalone .slang files without a .slangp preset won't have textures loaded
       // Textures are only loaded when defined in a .slangp preset file
     } else {
@@ -173,7 +166,6 @@ class SharedMetalResources {
     self.parameterState = ShaderParameterState()
     self.parameterState.parameters = parameters
     self.textureSamplers = samplers
-    print("DEBUG: loadFromPreset on instance \(ObjectIdentifier(self)) stored \(samplers.count) samplers, textureSamplers now has \(self.textureSamplers.count)")
     
     // Apply parameter values from preset
     for (name, value) in preset.parameterValues {
@@ -528,17 +520,14 @@ class MetalRenderer {
         
         // Bind all textures based on their Metal bindings (parsed from generated code)
         let samplers = shared.getTextureSamplers()
-        print("DEBUG: Rendering with \(samplers.count) samplers")
         
         // If no samplers were parsed, fallback to binding Source at index 0
         if samplers.isEmpty {
-          print("DEBUG: No samplers found, using fallback binding at index 0")
           encoder.setFragmentTexture(texture, index: 0)
           encoder.setFragmentSamplerState(shared.samplerState, index: 0)
         }
         
         for sampler in samplers {
-          print("DEBUG: Binding sampler '\(sampler.name)' at index \(sampler.binding)")
           if sampler.name == "Source" {
             // Source is the screen capture texture
             encoder.setFragmentTexture(texture, index: sampler.binding)
