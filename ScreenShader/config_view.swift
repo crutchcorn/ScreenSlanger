@@ -18,6 +18,10 @@ class ConfigViewController: NSViewController {
   private var parametersSection: NSStackView? = nil
   private var parameterSliders: [String: NSSlider] = [:]
   private var parameterLabels: [String: NSTextField] = [:]
+  
+  // Monitor selection controls
+  private var monitorSection: NSStackView? = nil
+  private var monitorCheckboxes: [CGDirectDisplayID: NSButton] = [:]
 
   override func loadView() {
     self.view = NSView()
@@ -80,6 +84,15 @@ class ConfigViewController: NSViewController {
     buttonStack.addArrangedSubview(self.reloadButton)
     
     self.stackView.addArrangedSubview(buttonStack)
+    
+    // Monitor selection section
+    self.monitorSection = NSStackView()
+    self.monitorSection?.orientation = .vertical
+    self.monitorSection?.spacing = 8
+    self.monitorSection?.alignment = .leading
+    self.monitorSection?.translatesAutoresizingMaskIntoConstraints = false
+    self.stackView.addArrangedSubview(self.monitorSection!)
+    updateMonitorUI()
     
     // Add Slang availability indicator
     if !SlangCompiler.isAvailable {
@@ -177,7 +190,59 @@ class ConfigViewController: NSViewController {
   func refreshUI() {
     self.activateButton.title = self.getActivateButtonTitle()
     self.activateButton.isEnabled = self.config.hasShaderPath()
+    self.updateMonitorUI()
     self.updateParameterUI()
+  }
+  
+  /// Update the monitor selection UI
+  func updateMonitorUI() {
+    // Remove existing monitor controls
+    self.monitorSection?.arrangedSubviews.forEach { $0.removeFromSuperview() }
+    self.monitorCheckboxes.removeAll()
+    
+    // Add header
+    let headerLabel = NSTextField(labelWithString: "Displays")
+    headerLabel.font = NSFont.boldSystemFont(ofSize: 14)
+    headerLabel.translatesAutoresizingMaskIntoConstraints = false
+    self.monitorSection?.addArrangedSubview(headerLabel)
+    
+    // Add a checkbox for each connected display
+    for (index, screen) in NSScreen.screens.enumerated() {
+      let displayID = getDisplayID(for: screen)
+      let isEnabled = config.isDisplayEnabled(displayID)
+      
+      // Get display name
+      let displayName = screen.localizedName
+      let resolution = "\(Int(screen.frame.width))×\(Int(screen.frame.height))"
+      let isMain = screen == NSScreen.main ? " (Main)" : ""
+      let label = "Display \(index + 1): \(displayName) - \(resolution)\(isMain)"
+      
+      let checkbox = NSButton(checkboxWithTitle: label, target: self, action: #selector(monitorCheckboxChanged(_:)))
+      checkbox.state = isEnabled ? .on : .off
+      checkbox.tag = Int(displayID)
+      checkbox.translatesAutoresizingMaskIntoConstraints = false
+      
+      self.monitorCheckboxes[displayID] = checkbox
+      self.monitorSection?.addArrangedSubview(checkbox)
+    }
+  }
+  
+  /// Get the CGDirectDisplayID for a screen
+  private func getDisplayID(for screen: NSScreen) -> CGDirectDisplayID {
+    let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber
+    return CGDirectDisplayID(screenNumber.uint32Value)
+  }
+  
+  @objc func monitorCheckboxChanged(_ sender: NSButton) {
+    let displayID = CGDirectDisplayID(sender.tag)
+    config.toggleDisplay(displayID)
+    
+    // Update all checkbox states to reflect current config
+    for (id, checkbox) in monitorCheckboxes {
+      checkbox.state = config.isDisplayEnabled(id) ? .on : .off
+    }
+    
+    onConfigUpdate()
   }
   
   /// Update parameter sliders when shader changes

@@ -8,18 +8,34 @@ class ScreenCapture {
   private var stream: SCStream?
   private var streamOutput: StreamOutput?
   private let streamQueue = DispatchQueue(label: "ScreenCaptureKitStreamQueue")
+  private let screen: NSScreen
+  
+  init(screen: NSScreen) {
+    self.screen = screen
+  }
+  
+  /// Get the CGDirectDisplayID for the screen
+  private func getDisplayID() -> CGDirectDisplayID {
+    let screenNumber = self.screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber
+    return CGDirectDisplayID(screenNumber.uint32Value)
+  }
 
   func startCapture() {
     if self.capturing {
       return
     }
     self.capturing = true
+    
+    let targetDisplayID = getDisplayID()
 
     Task {
       do {
         let content = try await SCShareableContent.current
-        guard let display = content.displays.first else {
-          fatalError("No displays found.")
+        
+        // Find the display matching our screen
+        guard let display = content.displays.first(where: { $0.displayID == targetDisplayID }) else {
+          print("Could not find display with ID \(targetDisplayID)")
+          return
         }
 
         let excludedWindows = content.windows.filter { window in
@@ -27,7 +43,7 @@ class ScreenCapture {
         }
         let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
 
-        let scaleFactor = NSScreen.main?.backingScaleFactor ?? 1.0
+        let scaleFactor = self.screen.backingScaleFactor
 
         let streamConfig = SCStreamConfiguration()
         streamConfig.width = Int(CGFloat(display.width) * scaleFactor)
@@ -45,9 +61,9 @@ class ScreenCapture {
           self.streamOutput!, type: .screen, sampleHandlerQueue: self.streamQueue)
 
         try await self.stream!.startCapture()
-        print("Started screen capture")
+        print("Started screen capture for display \(targetDisplayID)")
       } catch {
-        fatalError("Failed to start screen capture: \(error.localizedDescription)")
+        print("Failed to start screen capture: \(error.localizedDescription)")
       }
     }
   }

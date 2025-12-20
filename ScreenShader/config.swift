@@ -44,13 +44,46 @@ let defaultShaderSource: String = """
   """
 
 class Config: Codable {
-  var configVersion: Int = 3  // Bumped for parameter support
+  var configVersion: Int = 4  // Bumped for multi-monitor support
   var shaderPath: String? = nil
   var active: Bool = false
   var targetFPS: Int = 60
   
   /// Stored parameter values for RetroArch shaders, keyed by shader path then parameter name
   var shaderParameters: [String: [String: Float]] = [:]
+  
+  /// Set of display IDs that should have the shader applied (CGDirectDisplayID as UInt32)
+  /// If empty, all displays are enabled by default
+  var enabledDisplayIDs: Set<UInt32> = []
+  
+  /// Returns whether the given display should have the shader applied
+  func isDisplayEnabled(_ displayID: CGDirectDisplayID) -> Bool {
+    if enabledDisplayIDs.isEmpty {
+      return true  // All enabled by default
+    }
+    return enabledDisplayIDs.contains(UInt32(displayID))
+  }
+  
+  /// Toggle whether a display is enabled
+  func toggleDisplay(_ displayID: CGDirectDisplayID) {
+    let id = UInt32(displayID)
+    if enabledDisplayIDs.isEmpty {
+      // First time toggling - populate with all current displays, then remove this one
+      var maxDisplays: UInt32 = 16
+      var activeDisplays = [CGDirectDisplayID](repeating: 0, count: Int(maxDisplays))
+      var displayCount: UInt32 = 0
+      CGGetActiveDisplayList(maxDisplays, &activeDisplays, &displayCount)
+      
+      for i in 0..<Int(displayCount) {
+        enabledDisplayIDs.insert(UInt32(activeDisplays[i]))
+      }
+      enabledDisplayIDs.remove(id)
+    } else if enabledDisplayIDs.contains(id) {
+      enabledDisplayIDs.remove(id)
+    } else {
+      enabledDisplayIDs.insert(id)
+    }
+  }
 
   static func getFileURL() -> URL {
     let fileManager = FileManager.default

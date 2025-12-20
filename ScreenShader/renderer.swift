@@ -79,6 +79,7 @@ class MetalRenderer {
   private var samplerState: MTLSamplerState!
   private var repeatSamplerState: MTLSamplerState!  // For tiling background textures
   private let baseTime = ProcessInfo.processInfo.systemUptime
+  private let screen: NSScreen  // The screen this renderer is associated with
   
   // RetroArch shader support
   private var activeShaderType: ActiveShaderType = .none
@@ -89,11 +90,12 @@ class MetalRenderer {
   // Background texture for RetroArch shaders that need it
   private var backgroundTexture: MTLTexture? = nil
 
-  init(metalLayer: CAMetalLayer) {
+  init(metalLayer: CAMetalLayer, screen: NSScreen) {
     guard let device = MTLCreateSystemDefaultDevice() else {
       fatalError("Unable to access a Metal device on this system.")
     }
     self.device = device
+    self.screen = screen
 
     guard let queue = self.device.makeCommandQueue() else {
       fatalError("Could not create command queue.")
@@ -103,7 +105,7 @@ class MetalRenderer {
     metalLayer.device = self.device
     metalLayer.pixelFormat = .bgra8Unorm
     metalLayer.framebufferOnly = true
-    metalLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 1.0
+    metalLayer.contentsScale = screen.backingScaleFactor
     metalLayer.isOpaque = false
     metalLayer.backgroundColor = NSColor.clear.cgColor
 
@@ -477,65 +479,85 @@ class MetalRenderer {
     }
 
     // Set scissor rect to exclude the menu bar.
-    if let screen = NSScreen.main {
-      let scaleFactor = NSScreen.main?.backingScaleFactor ?? 1.0
-      let visibleFrame = screen.visibleFrame
-      let screenHeight = screen.frame.height
-      let scissorRect = MTLScissorRect(
-        x: Int(visibleFrame.origin.x * scaleFactor),
-        y: Int((screenHeight - visibleFrame.origin.y - visibleFrame.height) * scaleFactor),
-        width: Int(visibleFrame.width * scaleFactor),
-        height: Int(visibleFrame.height * scaleFactor)
-      )
-      encoder.setScissorRect(scissorRect)
+    // The scissor rect is relative to the drawable, not global screen coordinates.
+    let scaleFactor = self.screen.backingScaleFactor
+    let screenFrame = self.screen.frame
+    let visibleFrame = self.screen.visibleFrame
+    
+    // Calculate the visible area relative to the screen's own frame (not global coordinates)
+    // The visible frame excludes the menu bar and dock
+    let relativeX = visibleFrame.origin.x - screenFrame.origin.x
+    let relativeY = visibleFrame.origin.y - screenFrame.origin.y
+    
+    // Convert to Metal coordinates (origin at top-left, scaled by backing scale factor)
+    // The scissor rect Y is from the top, but visibleFrame Y is from the bottom
+    let scissorX = Int(relativeX * scaleFactor)
+    let scissorY = Int((screenFrame.height - relativeY - visibleFrame.height) * scaleFactor)
+    let scissorWidth = Int(visibleFrame.width * scaleFactor)
+    let scissorHeight = Int(visibleFrame.height * scaleFactor)
+    
+    // Clamp to drawable bounds to avoid Metal validation errors
+    let drawableWidth = drawable.texture.width
+    let drawableHeight = drawable.texture.height
+    
+    let clampedX = max(0, min(scissorX, drawableWidth))
+    let clampedY = max(0, min(scissorY, drawableHeight))
+    let clampedWidth = max(0, min(scissorWidth, drawableWidth - clampedX))
+    let clampedHeight = max(0, min(scissorHeight, drawableHeight - clampedY))
+    
+    let scissorRect = MTLScissorRect(
+      x: clampedX,
+      y: clampedY,
+      width: clampedWidth,
+      height: clampedHeight
+    )
+    encoder.setScissorRect(scissorRect)
 
-      if let renderPipeline = self.renderPipeline {
-        encoder.setRenderPipelineState(renderPipeline)
-        encoder.setFragmentTexture(texture, index: 0)
-        encoder.setFragmentSamplerState(self.samplerState, index: 0)
+    if let renderPipeline = self.renderPipeline {
+      encoder.setRenderPipelineState(renderPipeline)
+      encoder.setFragmentTexture(texture, index: 0)
+      encoder.setFragmentSamplerState(self.samplerState, index: 0)
+      
+      switch self.activeShaderType {
+      case .retroArch:
+        // Set up RetroArch-style uniforms
+        encodeRetroArchUniforms(
+          encoder: encoder,
+          textureWidth: width,
+          textureHeight: height
+        )
         
-        switch self.activeShaderType {
-        case .retroArch:
-          // Set up RetroArch-style uniforms
-          encodeRetroArchUniforms(
-            encoder: encoder,
-            screen: screen,
-            textureWidth: width,
-            textureHeight: height
-          )
-          
-          // Set background texture and sampler if available (at index 1)
-          // Use repeat sampler for tiling background textures
-          if let bgTexture = self.backgroundTexture {
-            encoder.setFragmentTexture(bgTexture, index: 1)
-            encoder.setFragmentSamplerState(self.repeatSamplerState, index: 1)
-          } else {
-            // Even if no background texture, we need a placeholder to avoid validation errors
-            // Use the source texture as a fallback
-            encoder.setFragmentTexture(texture, index: 1)
-            encoder.setFragmentSamplerState(self.repeatSamplerState, index: 1)
-          }
-          
-        case .slang:
-          // Slang shaders expect a Uniforms struct at buffer(0)
-          var screenSize = vector_float2(Float(screen.frame.width), Float(screen.frame.height))
-          var mousePosition = vector_float2(
-            Float(NSEvent.mouseLocation.x), Float(NSEvent.mouseLocation.y))
-          var time = Float(ProcessInfo.processInfo.systemUptime - self.baseTime)
-          
-          var uniforms = SlangUniforms(
-            screenSize: screenSize,
-            mousePosition: mousePosition,
-            time: time
-          )
-          encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
-          
-        case .none:
-          break
+        // Set background texture and sampler if available (at index 1)
+        // Use repeat sampler for tiling background textures
+        if let bgTexture = self.backgroundTexture {
+          encoder.setFragmentTexture(bgTexture, index: 1)
+          encoder.setFragmentSamplerState(self.repeatSamplerState, index: 1)
+        } else {
+          // Even if no background texture, we need a placeholder to avoid validation errors
+          // Use the source texture as a fallback
+          encoder.setFragmentTexture(texture, index: 1)
+          encoder.setFragmentSamplerState(self.repeatSamplerState, index: 1)
         }
-
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+        
+      case .slang:
+        // Slang shaders expect a Uniforms struct at buffer(0)
+        let screenSize = vector_float2(Float(self.screen.frame.width), Float(self.screen.frame.height))
+        let mousePosition = vector_float2(
+          Float(NSEvent.mouseLocation.x), Float(NSEvent.mouseLocation.y))
+        let time = Float(ProcessInfo.processInfo.systemUptime - self.baseTime)
+        
+        var uniforms = SlangUniforms(
+          screenSize: screenSize,
+          mousePosition: mousePosition,
+          time: time
+        )
+        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
+        
+      case .none:
+        break
       }
+
+      encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
     }
 
     encoder.endEncoding()
@@ -547,13 +569,12 @@ class MetalRenderer {
   /// Encode RetroArch-style uniforms for the shader
   private func encodeRetroArchUniforms(
     encoder: MTLRenderCommandEncoder,
-    screen: NSScreen,
     textureWidth: Int,
     textureHeight: Int
   ) {
-    let scaleFactor = screen.backingScaleFactor
-    let outputWidth = Float(screen.frame.width * scaleFactor)
-    let outputHeight = Float(screen.frame.height * scaleFactor)
+    let scaleFactor = self.screen.backingScaleFactor
+    let outputWidth = Float(self.screen.frame.width * scaleFactor)
+    let outputHeight = Float(self.screen.frame.height * scaleFactor)
     let sourceWidth = Float(textureWidth)
     let sourceHeight = Float(textureHeight)
     

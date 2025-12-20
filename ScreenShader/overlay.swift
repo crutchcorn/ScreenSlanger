@@ -7,19 +7,21 @@ class OverlayController: NSObject, MTKViewDelegate {
   private var metrics: Metrics
   private var errorMessage: ErrorMessage
   private var window: NSWindow!
+  private var screen: NSScreen
   private var screenCapture: ScreenCapture!
   private var renderer: MetalRenderer!
   private var contentBuffer: CVPixelBuffer?
   private var frameID: Int?
   private let dispatchQueue = DispatchQueue(label: "overlayController.queue")
 
-  init(config: Config, metrics: Metrics, errorMessage: ErrorMessage) {
+  init(config: Config, metrics: Metrics, errorMessage: ErrorMessage, screen: NSScreen) {
     self.config = config
     self.metrics = metrics
     self.errorMessage = errorMessage
+    self.screen = screen
     super.init()
 
-    let contentRect = NSScreen.main!.frame
+    let contentRect = screen.frame
 
     self.window = NSWindow(
       contentRect: contentRect,
@@ -33,15 +35,15 @@ class OverlayController: NSObject, MTKViewDelegate {
     self.window.ignoresMouseEvents = true
     self.window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
 
-    let metalView = MetalView(frame: contentRect)
+    let metalView = MetalView(frame: NSRect(origin: .zero, size: contentRect.size))
     metalView.delegate = self
     metalView.wantsLayer = true
     self.window.contentView = metalView
     self.window.makeKeyAndOrderFront(nil)
 
-    self.renderer = MetalRenderer(metalLayer: metalView.metalLayer)
+    self.renderer = MetalRenderer(metalLayer: metalView.metalLayer, screen: screen)
 
-    self.screenCapture = ScreenCapture()
+    self.screenCapture = ScreenCapture(screen: screen)
     self.screenCapture.config = self.config
     self.screenCapture.excludedWindowIDs = [CGWindowID(self.window.windowNumber)]
     self.screenCapture.onFrameReceived = { [weak self] contentBuffer in
@@ -114,5 +116,16 @@ class OverlayController: NSObject, MTKViewDelegate {
   /// Set a parameter value on the renderer
   func setParameterValue(name: String, value: Float) {
     self.renderer.parameterState.setValue(value, for: name)
+  }
+  
+  /// Get the display ID for this overlay's screen
+  func getDisplayID() -> CGDirectDisplayID {
+    let screenNumber = self.screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber
+    return CGDirectDisplayID(screenNumber.uint32Value)
+  }
+  
+  /// Get the screen this overlay is on
+  func getScreen() -> NSScreen {
+    return self.screen
   }
 }

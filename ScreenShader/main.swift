@@ -8,7 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private var configChanged: Bool = false
   private var metrics: Metrics = Metrics()
   private var errorMessage: ErrorMessage = ErrorMessage()
-  private var overlayController: OverlayController!
+  private var overlayControllers: [CGDirectDisplayID: OverlayController] = [:]
   private var statusItem: NSStatusItem!
   private var configWindowController: ConfigWindowController?
 
@@ -40,11 +40,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     setupMenuBar()
     createMenuBarIcon()
 
-    self.overlayController = OverlayController(
-      config: self.config, metrics: self.metrics, errorMessage: self.errorMessage)
+    createOverlayControllers()
 
     self.refreshConfig()
     self.openConfigWindow()
+  }
+  
+  /// Create overlay controllers for all enabled screens
+  private func createOverlayControllers() {
+    // Remove existing controllers
+    overlayControllers.removeAll()
+    
+    // Create a controller for each enabled screen
+    for screen in NSScreen.screens {
+      let displayID = getDisplayID(for: screen)
+      if config.isDisplayEnabled(displayID) {
+        let controller = OverlayController(
+          config: self.config,
+          metrics: self.metrics,
+          errorMessage: self.errorMessage,
+          screen: screen
+        )
+        overlayControllers[displayID] = controller
+      }
+    }
+  }
+  
+  /// Get the CGDirectDisplayID for a screen
+  private func getDisplayID(for screen: NSScreen) -> CGDirectDisplayID {
+    let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber
+    return CGDirectDisplayID(screenNumber.uint32Value)
   }
 
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool
@@ -56,7 +81,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private func refreshConfig() {
     self.statusItem.button?.image = self.getMenuBarIcon()
 
-    self.overlayController.refreshConfig()
+    // Recreate overlay controllers if display configuration changed
+    createOverlayControllers()
+    
+    for controller in overlayControllers.values {
+      controller.refreshConfig()
+    }
     self.configWindowController?.refreshActiveEffects()
     
     // Update parameter UI with new shader's parameters
@@ -155,9 +185,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       self?.refreshConfig()
     }
     self.configWindowController!.errorMessage = self.errorMessage
-    self.configWindowController!.parameterState = self.overlayController.getParameterState()
+    self.configWindowController!.parameterState = self.getFirstParameterState()
     self.configWindowController!.onParameterChanged = { [weak self] name, value in
-      self?.overlayController.setParameterValue(name: name, value: value)
+      self?.setParameterValueOnAllControllers(name: name, value: value)
       self?.configChanged = true
     }
     self.configWindowController!.createUI()
@@ -165,8 +195,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     window.makeKeyAndOrderFront(nil)
   }
   
+  /// Get parameter state from the first overlay controller
+  private func getFirstParameterState() -> ShaderParameterState? {
+    return overlayControllers.values.first?.getParameterState()
+  }
+  
+  /// Set parameter value on all overlay controllers
+  private func setParameterValueOnAllControllers(name: String, value: Float) {
+    for controller in overlayControllers.values {
+      controller.setParameterValue(name: name, value: value)
+    }
+  }
+  
   private func updateParameterUI() {
-    self.configWindowController?.updateParameterState(self.overlayController.getParameterState())
+    self.configWindowController?.updateParameterState(self.getFirstParameterState())
   }
 }
 
