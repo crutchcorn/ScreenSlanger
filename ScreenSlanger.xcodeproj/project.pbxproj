@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		41C290E42D4B04A100675317 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 41C290E32D4B04A100675317 /* Sparkle */; };
 		97ACF44B2EF6CF50002B55FD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97ACF43D2EF6CF50002B55FD /* Assets.xcassets */; };
 		97ACF44D2EF6CF50002B55FD /* metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4432EF6CF50002B55FD /* metrics.swift */; };
 		97ACF44E2EF6CF50002B55FD /* renderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4452EF6CF50002B55FD /* renderer.swift */; };
@@ -23,11 +22,6 @@
 
 /* Begin PBXFileReference section */
 		4159FE5C2D497D4400B79670 /* ScreenSlanger.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScreenSlanger.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		4176335D2D4DB1EB00FCC2AF /* waves.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; path = waves.gif; sourceTree = "<group>"; };
-		41C290DE2D4AC87F00675317 /* screen_recording.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = screen_recording.png; sourceTree = "<group>"; };
-		41C290DF2D4AC87F00675317 /* red_blue_swap.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = red_blue_swap.png; sourceTree = "<group>"; };
-		41C290E02D4AC88E00675317 /* toggle.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = toggle.png; sourceTree = "<group>"; };
-		41C290E12D4AC88E00675317 /* select_activate.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = select_activate.png; sourceTree = "<group>"; };
 		97ACF43D2EF6CF50002B55FD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		97ACF43E2EF6CF50002B55FD /* config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = config.swift; sourceTree = "<group>"; };
 		97ACF43F2EF6CF50002B55FD /* config_view.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = config_view.swift; sourceTree = "<group>"; };
@@ -47,7 +41,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				41C290E42D4B04A100675317 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -57,7 +50,6 @@
 		4159FE532D497D4400B79670 = {
 			isa = PBXGroup;
 			children = (
-				41C290D22D4AC3DA00675317 /* images */,
 				97ACF44A2EF6CF50002B55FD /* ScreenSlanger */,
 				4159FE5D2D497D4400B79670 /* Products */,
 			);
@@ -71,18 +63,6 @@
 				4159FE5C2D497D4400B79670 /* ScreenSlanger.app */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		41C290D22D4AC3DA00675317 /* images */ = {
-			isa = PBXGroup;
-			children = (
-				4176335D2D4DB1EB00FCC2AF /* waves.gif */,
-				41C290E12D4AC88E00675317 /* select_activate.png */,
-				41C290E02D4AC88E00675317 /* toggle.png */,
-				41C290DF2D4AC87F00675317 /* red_blue_swap.png */,
-				41C290DE2D4AC87F00675317 /* screen_recording.png */,
-			);
-			path = images;
 			sourceTree = "<group>";
 		};
 		97ACF44A2EF6CF50002B55FD /* ScreenSlanger */ = {
@@ -121,7 +101,6 @@
 			);
 			name = ScreenSlanger;
 			packageProductDependencies = (
-				41C290E32D4B04A100675317 /* Sparkle */,
 			);
 			productName = ScreenShader;
 			productReference = 4159FE5C2D497D4400B79670 /* ScreenSlanger.app */;
@@ -152,7 +131,6 @@
 			);
 			mainGroup = 4159FE532D497D4400B79670;
 			packageReferences = (
-				41C290E22D4B04A100675317 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			productRefGroup = 4159FE5D2D497D4400B79670 /* Products */;
 			projectDirPath = "";
@@ -401,25 +379,6 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		41C290E22D4B04A100675317 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.6.4;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		41C290E32D4B04A100675317 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 41C290E22D4B04A100675317 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
-/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4159FE542D497D4400B79670 /* Project object */;
 }

@@ -1,9 +1,7 @@
 import AppKit
 import CoreGraphics
-import Sparkle
 
 class AppDelegate: NSObject, NSApplicationDelegate {
-  private var updaterController: SPUStandardUpdaterController!
   private var config: Config!
   private var configChanged: Bool = false
   private var metrics: Metrics = Metrics()
@@ -13,8 +11,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private var configWindowController: ConfigWindowController?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    self.updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
-    
     if CGRequestScreenCaptureAccess() {
       print("Screen capture access granted.")
     } else {
@@ -132,13 +128,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     settingsItem.target = self
     appSubMenu.addItem(settingsItem)
     
-    let updatesItem = NSMenuItem(
-      title: "Check for updates",
-      action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)),
-      keyEquivalent: "")
-    updatesItem.target = self.updaterController
-    appSubMenu.addItem(updatesItem)
-
     appSubMenu.addItem(NSMenuItem.separator())
     appSubMenu.addItem(
       NSMenuItem(
