@@ -69,6 +69,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let existingIDs = Set(overlayControllers.keys)
     for displayID in existingIDs {
       if !enabledDisplayIDs.contains(displayID) {
+        // Explicitly cleanup before removing
+        overlayControllers[displayID]?.cleanup()
         overlayControllers.removeValue(forKey: displayID)
       }
     }

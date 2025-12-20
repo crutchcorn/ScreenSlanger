@@ -13,6 +13,7 @@ class OverlayController: NSObject, MTKViewDelegate {
   private var contentBuffer: CVPixelBuffer?
   private var frameID: Int?
   private let dispatchQueue = DispatchQueue(label: "overlayController.queue")
+  private var isCleanedUp = false
 
   init(config: Config, metrics: Metrics, errorMessage: ErrorMessage, screen: NSScreen) {
     self.config = config
@@ -50,26 +51,59 @@ class OverlayController: NSObject, MTKViewDelegate {
       self?.receiveFrame(contentBuffer: contentBuffer)
     }
   }
+  
+  deinit {
+    // cleanup() should have already been called
+  }
+  
+  /// Stop all capture and close the window
+  func cleanup() {
+    // Prevent double cleanup
+    guard !isCleanedUp else { return }
+    isCleanedUp = true
+    
+    // Clear the MTKView delegate first to stop render callbacks
+    if let metalView = self.window?.contentView as? MTKView {
+      metalView.delegate = nil
+      metalView.isPaused = true
+    }
+    
+    // Stop screen capture
+    self.screenCapture?.stopCapture()
+    
+    // Drain any pending operations on our queue
+    self.dispatchQueue.sync {
+      self.contentBuffer = nil
+      self.frameID = nil
+    }
+    
+    // Close and release the window
+    self.window?.orderOut(nil)
+  }
 
   func receiveFrame(contentBuffer: CVPixelBuffer) {
+    guard !isCleanedUp else { return }
+    
     let frameID = self.metrics.newFrameID()
     self.metrics.recordScreenCapture(frameID: frameID)
 
-    self.dispatchQueue.async {
+    self.dispatchQueue.async { [weak self] in
+      guard let self = self, !self.isCleanedUp else { return }
       self.frameID = frameID
       self.contentBuffer = contentBuffer
     }
-
-    // self.render()
   }
 
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
   func draw(in view: MTKView) {
+    guard !isCleanedUp else { return }
     self.render()
   }
 
   func render() {
+    guard !isCleanedUp else { return }
+    
     var contentBuffer: CVPixelBuffer?
     var frameID: Int?
 
@@ -80,6 +114,9 @@ class OverlayController: NSObject, MTKViewDelegate {
         self.contentBuffer = nil
     }
     
+    // Double-check after sync in case cleanup happened while waiting
+    guard !isCleanedUp else { return }
+    
     if let contentBuffer = contentBuffer, let frameID = frameID {
       self.renderer.renderContentBuffer(window: self.window, contentBuffer: contentBuffer)
       self.metrics.recordRender(frameID: frameID)
@@ -87,6 +124,8 @@ class OverlayController: NSObject, MTKViewDelegate {
   }
 
   func refreshConfig() {
+    guard !isCleanedUp else { return }
+    
     let activeShader = self.config.active ? self.config.getShader() : nil
 
     do {
@@ -110,11 +149,13 @@ class OverlayController: NSObject, MTKViewDelegate {
   
   /// Get the current parameter state from the renderer
   func getParameterState() -> ShaderParameterState? {
+    guard !isCleanedUp else { return nil }
     return self.renderer.parameterState
   }
   
   /// Set a parameter value on the renderer
   func setParameterValue(name: String, value: Float) {
+    guard !isCleanedUp else { return }
     self.renderer.parameterState.setValue(value, for: name)
   }
   

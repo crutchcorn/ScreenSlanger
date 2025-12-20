@@ -73,12 +73,19 @@ class ScreenCapture {
       return
     }
     self.capturing = false
+    
+    // Clear callback immediately to prevent race conditions
+    self.onFrameReceived = { _ in }
+    
+    // Capture references before the Task
+    let stream = self.stream
+    let streamOutput = self.streamOutput
+    self.stream = nil
+    self.streamOutput = nil
 
     Task {
       do {
-        try await self.stream?.stopCapture()
-        self.stream = nil
-        self.streamOutput = nil
+        try await stream?.stopCapture()
         print("Stopped screen capture.")
       } catch {
         print("Failed to stop screen capture: \(error.localizedDescription)")
