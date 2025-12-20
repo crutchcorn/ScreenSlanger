@@ -48,13 +48,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   
   /// Create overlay controllers for all enabled screens
   private func createOverlayControllers() {
-    // Remove existing controllers
-    overlayControllers.removeAll()
+    updateOverlayControllers()
+  }
+  
+  /// Update overlay controllers - only add/remove what changed
+  private func updateOverlayControllers() {
+    // Get current set of enabled display IDs
+    var enabledDisplayIDs = Set<CGDirectDisplayID>()
+    var screensByID: [CGDirectDisplayID: NSScreen] = [:]
     
-    // Create a controller for each enabled screen
     for screen in NSScreen.screens {
       let displayID = getDisplayID(for: screen)
       if config.isDisplayEnabled(displayID) {
+        enabledDisplayIDs.insert(displayID)
+        screensByID[displayID] = screen
+      }
+    }
+    
+    // Remove controllers for displays that are no longer enabled
+    let existingIDs = Set(overlayControllers.keys)
+    for displayID in existingIDs {
+      if !enabledDisplayIDs.contains(displayID) {
+        overlayControllers.removeValue(forKey: displayID)
+      }
+    }
+    
+    // Add controllers for newly enabled displays
+    for displayID in enabledDisplayIDs {
+      if overlayControllers[displayID] == nil, let screen = screensByID[displayID] {
         let controller = OverlayController(
           config: self.config,
           metrics: self.metrics,
@@ -81,8 +102,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private func refreshConfig() {
     self.statusItem.button?.image = self.getMenuBarIcon()
 
-    // Recreate overlay controllers if display configuration changed
-    createOverlayControllers()
+    // Update overlay controllers - only adds/removes what changed
+    updateOverlayControllers()
     
     for controller in overlayControllers.values {
       controller.refreshConfig()

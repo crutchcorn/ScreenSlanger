@@ -63,9 +63,17 @@ class SharedMetalResources {
     return backgroundTexture
   }
   
+  private var currentShaderPath: String? = nil
+  
   func setEffectSource(_ effectSource: String?, shaderPath: String? = nil) throws {
+    // Skip if shader hasn't changed
+    if effectSource == activeEffectSource && shaderPath == currentShaderPath {
+      return
+    }
+    
     // Reset preset
     self.shaderPreset = nil
+    self.currentShaderPath = shaderPath
     
     guard let effectSource = effectSource else {
       self.activeEffectSource = nil
