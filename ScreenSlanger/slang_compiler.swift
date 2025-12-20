@@ -86,8 +86,6 @@ class SlangCompiler {
     private static let slangcSearchPaths = [
         // Environment variable override
         ProcessInfo.processInfo.environment["SLANG_PATH"],
-        // User's specific Slang installation
-        "/Users/crutchcorn/slang-2025.24.1-macos-aarch64 2/bin/slangc",
         // Homebrew installation
         "/opt/homebrew/bin/slangc",
         "/usr/local/bin/slangc",
