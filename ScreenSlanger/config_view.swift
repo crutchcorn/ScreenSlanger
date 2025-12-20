@@ -35,7 +35,7 @@ class ConfigViewController: NSViewController {
     self.view.addSubview(self.stackView)
     
     // Title
-    let titleLabel = NSTextField(labelWithString: "ScreenShader")
+    let titleLabel = NSTextField(labelWithString: "ScreenSlanger")
     titleLabel.font = NSFont.boldSystemFont(ofSize: 18)
     titleLabel.translatesAutoresizingMaskIntoConstraints = false
     self.stackView.addArrangedSubview(titleLabel)
@@ -388,7 +388,7 @@ class ConfigWindowController: NSWindowController {
   func createUI() {
     guard let window = self.window else { return }
 
-    window.title = "ScreenShader Settings"
+    window.title = "ScreenSlanger Settings"
 
     self.configViewController.config = self.config
     self.configViewController.onConfigUpdate = self.onConfigUpdate

@@ -89,7 +89,7 @@ class Config: Codable {
     let fileManager = FileManager.default
     let appSupportDir = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
       .first!
-    let directory = appSupportDir.appendingPathComponent("ScreenShader", isDirectory: true)
+    let directory = appSupportDir.appendingPathComponent("ScreenSlanger", isDirectory: true)
 
     if !fileManager.fileExists(atPath: directory.path) {
       try? fileManager.createDirectory(

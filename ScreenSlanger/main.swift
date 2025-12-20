@@ -142,7 +142,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     appSubMenu.addItem(NSMenuItem.separator())
     appSubMenu.addItem(
       NSMenuItem(
-        title: "Quit ScreenShader", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q"))
+        title: "Quit ScreenSlanger", action: #selector(NSApp.terminate(_:)), keyEquivalent: "q"))
 
     let editMenu = NSMenuItem()
     mainMenu.addItem(editMenu)
@@ -180,7 +180,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     let active = self.config.active
     let systemSymbolName = active ? "paintbrush.fill" : "paintbrush"
     return NSImage(
-      systemSymbolName: systemSymbolName, accessibilityDescription: "ScreenShader")!
+      systemSymbolName: systemSymbolName, accessibilityDescription: "ScreenSlanger")!
   }
 
   @objc private func toggleEffect() {

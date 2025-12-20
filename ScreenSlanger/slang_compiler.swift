@@ -86,6 +86,8 @@ class SlangCompiler {
     private static let slangcSearchPaths = [
         // Environment variable override
         ProcessInfo.processInfo.environment["SLANG_PATH"],
+        // User's specific Slang installation
+        "/Users/crutchcorn/slang-2025.24.1-macos-aarch64 2/bin/slangc",
         // Homebrew installation
         "/opt/homebrew/bin/slangc",
         "/usr/local/bin/slangc",
@@ -183,11 +185,11 @@ class SlangCompiler {
         return metalSource
     }
     
-    /// Wrap user-provided Slang effect code with the ScreenShader framework code
-    /// This creates a complete Slang shader that matches ScreenShader's expectations
+    /// Wrap user-provided Slang effect code with the ScreenSlanger framework code
+    /// This creates a complete Slang shader that matches ScreenSlanger's expectations
     static func wrapEffectSource(_ effectSource: String) -> String {
         return """
-        // ScreenShader Slang wrapper
+        // ScreenSlanger Slang wrapper
         // This shader is compiled from Slang to Metal
         
         // Input texture and sampler
@@ -203,7 +205,7 @@ class SlangCompiler {
         
         ConstantBuffer<Uniforms> uniforms : register(b0);
         
-        // Shader input structure matching ScreenShader's ShaderInput
+        // Shader input structure matching ScreenSlanger's ShaderInput
         struct ShaderInput {
             Texture2D<float4> inputTexture;
             SamplerState sampler;

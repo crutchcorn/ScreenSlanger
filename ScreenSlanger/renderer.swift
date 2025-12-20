@@ -373,7 +373,7 @@ class MetalRenderer {
     let librarySource = """
       \(metalFragmentSource)
       
-      // ========== ScreenShader Vertex Shader ==========
+      // ========== ScreenSlanger Vertex Shader ==========
       struct VertexOut {
         float4 position [[position]];
         float2 texCoord [[user(TEXCOORD)]];

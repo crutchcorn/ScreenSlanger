@@ -16,8 +16,8 @@
             <BuildableReference
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "4159FE5B2D497D4400B79670"
-               BuildableName = "ScreenShader.app"
-               BlueprintName = "ScreenShader"
+               BuildableName = "ScreenSlanger.app"
+               BlueprintName = "ScreenSlanger"
                ReferencedContainer = "container:ScreenShader.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -47,8 +47,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "4159FE5B2D497D4400B79670"
-            BuildableName = "ScreenShader.app"
-            BlueprintName = "ScreenShader"
+            BuildableName = "ScreenSlanger.app"
+            BlueprintName = "ScreenSlanger"
             ReferencedContainer = "container:ScreenShader.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -64,8 +64,8 @@
          <BuildableReference
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "4159FE5B2D497D4400B79670"
-            BuildableName = "ScreenShader.app"
-            BlueprintName = "ScreenShader"
+            BuildableName = "ScreenSlanger.app"
+            BlueprintName = "ScreenSlanger"
             ReferencedContainer = "container:ScreenShader.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

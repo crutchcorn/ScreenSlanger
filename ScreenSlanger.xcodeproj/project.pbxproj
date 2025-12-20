@@ -7,41 +7,39 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		4159FE622D497D4600B79670 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4159FE612D497D4600B79670 /* Assets.xcassets */; };
-		9736AA952EF210C2002DDC37 /* retroarch_shader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9736AA962EF210C2002DDC37 /* retroarch_shader.swift */; };
-		416975F62D497E21004C8E93 /* metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975EC2D497E21004C8E93 /* metrics.swift */; };
-		416975F72D497E21004C8E93 /* config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975ED2D497E21004C8E93 /* config.swift */; };
-		416975F82D497E21004C8E93 /* screen_capture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975EE2D497E21004C8E93 /* screen_capture.swift */; };
-		416975F92D497E21004C8E93 /* renderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975EF2D497E21004C8E93 /* renderer.swift */; };
-		416975FA2D497E21004C8E93 /* config_view.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975F02D497E21004C8E93 /* config_view.swift */; };
-		416975FC2D497E21004C8E93 /* overlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975F22D497E21004C8E93 /* overlay.swift */; };
-		416975FD2D497E21004C8E93 /* error_message.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975F32D497E21004C8E93 /* error_message.swift */; };
-		416975FE2D497E21004C8E93 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416975F42D497E21004C8E93 /* main.swift */; };
 		41C290E42D4B04A100675317 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 41C290E32D4B04A100675317 /* Sparkle */; };
-		9736AA942EF210C1002DDC37 /* slang_compiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9736AA932EF210C1002DDC37 /* slang_compiler.swift */; };
+		97ACF44B2EF6CF50002B55FD /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97ACF43D2EF6CF50002B55FD /* Assets.xcassets */; };
+		97ACF44D2EF6CF50002B55FD /* metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4432EF6CF50002B55FD /* metrics.swift */; };
+		97ACF44E2EF6CF50002B55FD /* renderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4452EF6CF50002B55FD /* renderer.swift */; };
+		97ACF44F2EF6CF50002B55FD /* error_message.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4402EF6CF50002B55FD /* error_message.swift */; };
+		97ACF4502EF6CF50002B55FD /* slang_compiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4492EF6CF50002B55FD /* slang_compiler.swift */; };
+		97ACF4512EF6CF50002B55FD /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4422EF6CF50002B55FD /* main.swift */; };
+		97ACF4522EF6CF50002B55FD /* screen_capture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4472EF6CF50002B55FD /* screen_capture.swift */; };
+		97ACF4532EF6CF50002B55FD /* config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF43E2EF6CF50002B55FD /* config.swift */; };
+		97ACF4542EF6CF50002B55FD /* config_view.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF43F2EF6CF50002B55FD /* config_view.swift */; };
+		97ACF4552EF6CF50002B55FD /* overlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4442EF6CF50002B55FD /* overlay.swift */; };
+		97ACF4562EF6CF50002B55FD /* retroarch_shader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4462EF6CF50002B55FD /* retroarch_shader.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		4159FE5C2D497D4400B79670 /* ScreenShader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScreenShader.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		4159FE612D497D4600B79670 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		4159FE662D497D4600B79670 /* ScreenShader.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ScreenShader.entitlements; sourceTree = "<group>"; };
-		416975EC2D497E21004C8E93 /* metrics.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = metrics.swift; sourceTree = "<group>"; };
-		416975ED2D497E21004C8E93 /* config.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = config.swift; sourceTree = "<group>"; };
-		416975EE2D497E21004C8E93 /* screen_capture.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = screen_capture.swift; sourceTree = "<group>"; };
-		416975EF2D497E21004C8E93 /* renderer.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = renderer.swift; sourceTree = "<group>"; };
-		416975F02D497E21004C8E93 /* config_view.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = config_view.swift; sourceTree = "<group>"; };
-		416975F22D497E21004C8E93 /* overlay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = overlay.swift; sourceTree = "<group>"; };
-		416975F32D497E21004C8E93 /* error_message.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = error_message.swift; sourceTree = "<group>"; };
-		416975F42D497E21004C8E93 /* main.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		4159FE5C2D497D4400B79670 /* ScreenSlanger.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ScreenSlanger.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4176335D2D4DB1EB00FCC2AF /* waves.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; path = waves.gif; sourceTree = "<group>"; };
-		41C290CD2D49862B00675317 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		41C290CE2D4ABD2000675317 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
 		41C290DE2D4AC87F00675317 /* screen_recording.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = screen_recording.png; sourceTree = "<group>"; };
 		41C290DF2D4AC87F00675317 /* red_blue_swap.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = red_blue_swap.png; sourceTree = "<group>"; };
 		41C290E02D4AC88E00675317 /* toggle.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = toggle.png; sourceTree = "<group>"; };
 		41C290E12D4AC88E00675317 /* select_activate.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = select_activate.png; sourceTree = "<group>"; };
-		9736AA932EF210C1002DDC37 /* slang_compiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = slang_compiler.swift; sourceTree = "<group>"; };
-		9736AA962EF210C2002DDC37 /* retroarch_shader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = retroarch_shader.swift; sourceTree = "<group>"; };
+		97ACF43D2EF6CF50002B55FD /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		97ACF43E2EF6CF50002B55FD /* config.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = config.swift; sourceTree = "<group>"; };
+		97ACF43F2EF6CF50002B55FD /* config_view.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = config_view.swift; sourceTree = "<group>"; };
+		97ACF4402EF6CF50002B55FD /* error_message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = error_message.swift; sourceTree = "<group>"; };
+		97ACF4422EF6CF50002B55FD /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		97ACF4432EF6CF50002B55FD /* metrics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = metrics.swift; sourceTree = "<group>"; };
+		97ACF4442EF6CF50002B55FD /* overlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = overlay.swift; sourceTree = "<group>"; };
+		97ACF4452EF6CF50002B55FD /* renderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = renderer.swift; sourceTree = "<group>"; };
+		97ACF4462EF6CF50002B55FD /* retroarch_shader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = retroarch_shader.swift; sourceTree = "<group>"; };
+		97ACF4472EF6CF50002B55FD /* screen_capture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = screen_capture.swift; sourceTree = "<group>"; };
+		97ACF4492EF6CF50002B55FD /* slang_compiler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = slang_compiler.swift; sourceTree = "<group>"; };
+		97ACF4572EF6D115002B55FD /* ScreenSlanger.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = ScreenSlanger.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -60,8 +58,7 @@
 			isa = PBXGroup;
 			children = (
 				41C290D22D4AC3DA00675317 /* images */,
-				41C290CE2D4ABD2000675317 /* README.md */,
-				4159FE5E2D497D4400B79670 /* ScreenShader */,
+				97ACF44A2EF6CF50002B55FD /* ScreenSlanger */,
 				4159FE5D2D497D4400B79670 /* Products */,
 			);
 			indentWidth = 2;
@@ -71,29 +68,9 @@
 		4159FE5D2D497D4400B79670 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				4159FE5C2D497D4400B79670 /* ScreenShader.app */,
+				4159FE5C2D497D4400B79670 /* ScreenSlanger.app */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		4159FE5E2D497D4400B79670 /* ScreenShader */ = {
-			isa = PBXGroup;
-			children = (
-				41C290CD2D49862B00675317 /* Info.plist */,
-				4159FE612D497D4600B79670 /* Assets.xcassets */,
-				4159FE662D497D4600B79670 /* ScreenShader.entitlements */,
-				416975F02D497E21004C8E93 /* config_view.swift */,
-				416975ED2D497E21004C8E93 /* config.swift */,
-				416975F32D497E21004C8E93 /* error_message.swift */,
-				416975F42D497E21004C8E93 /* main.swift */,
-				416975EC2D497E21004C8E93 /* metrics.swift */,
-				9736AA932EF210C1002DDC37 /* slang_compiler.swift */,
-				9736AA962EF210C2002DDC37 /* retroarch_shader.swift */,
-				416975F22D497E21004C8E93 /* overlay.swift */,
-				416975EF2D497E21004C8E93 /* renderer.swift */,
-				416975EE2D497E21004C8E93 /* screen_capture.swift */,
-			);
-			path = ScreenShader;
 			sourceTree = "<group>";
 		};
 		41C290D22D4AC3DA00675317 /* images */ = {
@@ -108,12 +85,31 @@
 			path = images;
 			sourceTree = "<group>";
 		};
+		97ACF44A2EF6CF50002B55FD /* ScreenSlanger */ = {
+			isa = PBXGroup;
+			children = (
+				97ACF43D2EF6CF50002B55FD /* Assets.xcassets */,
+				97ACF43E2EF6CF50002B55FD /* config.swift */,
+				97ACF43F2EF6CF50002B55FD /* config_view.swift */,
+				97ACF4402EF6CF50002B55FD /* error_message.swift */,
+				97ACF4422EF6CF50002B55FD /* main.swift */,
+				97ACF4432EF6CF50002B55FD /* metrics.swift */,
+				97ACF4442EF6CF50002B55FD /* overlay.swift */,
+				97ACF4452EF6CF50002B55FD /* renderer.swift */,
+				97ACF4572EF6D115002B55FD /* ScreenSlanger.entitlements */,
+				97ACF4462EF6CF50002B55FD /* retroarch_shader.swift */,
+				97ACF4472EF6CF50002B55FD /* screen_capture.swift */,
+				97ACF4492EF6CF50002B55FD /* slang_compiler.swift */,
+			);
+			path = ScreenSlanger;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		4159FE5B2D497D4400B79670 /* ScreenShader */ = {
+		4159FE5B2D497D4400B79670 /* ScreenSlanger */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 4159FE692D497D4600B79670 /* Build configuration list for PBXNativeTarget "ScreenShader" */;
+			buildConfigurationList = 4159FE692D497D4600B79670 /* Build configuration list for PBXNativeTarget "ScreenSlanger" */;
 			buildPhases = (
 				4159FE582D497D4400B79670 /* Sources */,
 				4159FE592D497D4400B79670 /* Frameworks */,
@@ -123,12 +119,12 @@
 			);
 			dependencies = (
 			);
-			name = ScreenShader;
+			name = ScreenSlanger;
 			packageProductDependencies = (
 				41C290E32D4B04A100675317 /* Sparkle */,
 			);
 			productName = ScreenShader;
-			productReference = 4159FE5C2D497D4400B79670 /* ScreenShader.app */;
+			productReference = 4159FE5C2D497D4400B79670 /* ScreenSlanger.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -146,7 +142,7 @@
 					};
 				};
 			};
-			buildConfigurationList = 4159FE572D497D4400B79670 /* Build configuration list for PBXProject "ScreenShader" */;
+			buildConfigurationList = 4159FE572D497D4400B79670 /* Build configuration list for PBXProject "ScreenSlanger" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -162,7 +158,7 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				4159FE5B2D497D4400B79670 /* ScreenShader */,
+				4159FE5B2D497D4400B79670 /* ScreenSlanger */,
 			);
 		};
 /* End PBXProject section */
@@ -172,7 +168,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4159FE622D497D4600B79670 /* Assets.xcassets in Resources */,
+				97ACF44B2EF6CF50002B55FD /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -183,16 +179,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				416975F72D497E21004C8E93 /* config.swift in Sources */,
-				416975FE2D497E21004C8E93 /* main.swift in Sources */,
-				416975F82D497E21004C8E93 /* screen_capture.swift in Sources */,
-				416975FC2D497E21004C8E93 /* overlay.swift in Sources */,
-				416975FD2D497E21004C8E93 /* error_message.swift in Sources */,
-				416975F92D497E21004C8E93 /* renderer.swift in Sources */,
-				9736AA942EF210C1002DDC37 /* slang_compiler.swift in Sources */,
-				9736AA952EF210C2002DDC37 /* retroarch_shader.swift in Sources */,
-				416975FA2D497E21004C8E93 /* config_view.swift in Sources */,
-				416975F62D497E21004C8E93 /* metrics.swift in Sources */,
+				97ACF44D2EF6CF50002B55FD /* metrics.swift in Sources */,
+				97ACF44E2EF6CF50002B55FD /* renderer.swift in Sources */,
+				97ACF44F2EF6CF50002B55FD /* error_message.swift in Sources */,
+				97ACF4502EF6CF50002B55FD /* slang_compiler.swift in Sources */,
+				97ACF4512EF6CF50002B55FD /* main.swift in Sources */,
+				97ACF4522EF6CF50002B55FD /* screen_capture.swift in Sources */,
+				97ACF4532EF6CF50002B55FD /* config.swift in Sources */,
+				97ACF4542EF6CF50002B55FD /* config_view.swift in Sources */,
+				97ACF4552EF6CF50002B55FD /* overlay.swift in Sources */,
+				97ACF4562EF6CF50002B55FD /* retroarch_shader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -252,7 +248,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.7;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -309,7 +305,7 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
-				MACOSX_DEPLOYMENT_TARGET = 13.7;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = macosx;
@@ -322,15 +318,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = ScreenShader/ScreenShader.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ScreenSlanger/ScreenSlanger.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
-				DEVELOPMENT_TEAM = 35Z85ZPNRG;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 73UF4KLZM8;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = ScreenShader/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = ScreenShader;
+				INFOPLIST_FILE = ScreenSlanger/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ScreenSlanger;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -338,10 +336,11 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.branpk.ScreenShader;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.crutchcorn.ScreenSlanger;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -352,15 +351,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = ScreenShader/ScreenShader.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ScreenSlanger/ScreenSlanger.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
-				DEVELOPMENT_TEAM = 35Z85ZPNRG;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 73UF4KLZM8;
 				ENABLE_HARDENED_RUNTIME = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = ScreenShader/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = ScreenShader;
+				INFOPLIST_FILE = ScreenSlanger/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = ScreenSlanger;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				INFOPLIST_KEY_NSPrincipalClass = NSApplication;
@@ -368,10 +369,11 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 1.1.1;
-				PRODUCT_BUNDLE_IDENTIFIER = io.github.branpk.ScreenShader;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.0.1;
+				PRODUCT_BUNDLE_IDENTIFIER = io.github.crutchcorn.ScreenSlanger;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -380,7 +382,7 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		4159FE572D497D4400B79670 /* Build configuration list for PBXProject "ScreenShader" */ = {
+		4159FE572D497D4400B79670 /* Build configuration list for PBXProject "ScreenSlanger" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4159FE672D497D4600B79670 /* Debug */,
@@ -389,7 +391,7 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		4159FE692D497D4600B79670 /* Build configuration list for PBXNativeTarget "ScreenShader" */ = {
+		4159FE692D497D4600B79670 /* Build configuration list for PBXNativeTarget "ScreenSlanger" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
 				4159FE6A2D497D4600B79670 /* Debug */,
