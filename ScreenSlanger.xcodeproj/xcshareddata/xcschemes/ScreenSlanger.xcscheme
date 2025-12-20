@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "1620"
+   LastUpgradeVersion = "2610"
    version = "1.7">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -18,7 +18,7 @@
                BlueprintIdentifier = "4159FE5B2D497D4400B79670"
                BuildableName = "ScreenSlanger.app"
                BlueprintName = "ScreenSlanger"
-               ReferencedContainer = "container:ScreenShader.xcodeproj">
+               ReferencedContainer = "container:ScreenSlanger.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -31,16 +31,14 @@
       shouldAutocreateTestPlan = "YES">
    </TestAction>
    <LaunchAction
-      buildConfiguration = "Debug"
+      buildConfiguration = "Release"
       selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
       selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
-      enableASanStackUseAfterReturn = "YES"
       launchStyle = "0"
       useCustomWorkingDirectory = "NO"
       ignoresPersistentStateOnLaunch = "NO"
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
-      enableGPUShaderValidationMode = "2"
       allowLocationSimulation = "YES">
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
@@ -49,7 +47,7 @@
             BlueprintIdentifier = "4159FE5B2D497D4400B79670"
             BuildableName = "ScreenSlanger.app"
             BlueprintName = "ScreenSlanger"
-            ReferencedContainer = "container:ScreenShader.xcodeproj">
+            ReferencedContainer = "container:ScreenSlanger.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -66,7 +64,7 @@
             BlueprintIdentifier = "4159FE5B2D497D4400B79670"
             BuildableName = "ScreenSlanger.app"
             BlueprintName = "ScreenSlanger"
-            ReferencedContainer = "container:ScreenShader.xcodeproj">
+            ReferencedContainer = "container:ScreenSlanger.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>
