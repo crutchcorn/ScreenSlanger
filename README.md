@@ -20,19 +20,40 @@ Useful for applying shaders like [my EINK shader](https://github.com/crutchcorn/
 # Pre-reqs
 
 - [Homebrew](https://brew.sh/)
-- Silicon Mac (M1+) with macOS 26+
+- Apple Silicon Mac (M1+) with macOS 26 or later, including macOS 27
 
 # Installation
 
-First, install the pre-req packages:
+From a copy of this repository, install or update the shader compilers:
 
 ```shell
-brew install spirv-cross glslang
+./scripts/setup-dependencies.sh
 ```
 
-Then, [install `slangc`](https://github.com/shader-slang/slang/releases/latest) to `~/slang/bin/slangc`
+This installs and upgrades the `glslang` and `spirv-cross` packages in [Brewfile](./Brewfile), then downloads [Slang 2026.18](https://github.com/shader-slang/slang/releases/tag/v2026.18) and checks its SHA-256 checksum. Slang is installed into `~/Library/Application Support/ScreenSlanger/Tools/slang/2026.18`, with a `current` symlink that ScreenSlanger discovers automatically. The full Slang distribution is needed, including its libraries. Existing installations under `~/slang` are preserved.
 
 Finally, [install ScreenSlanger from the DMG in our "Releases" tab.](https://github.com/crutchcorn/ScreenSlanger/releases/latest)
+
+Run the setup script again after pulling project updates. Homebrew packages follow their current stable releases; the Slang version and checksums are pinned in the script so a compiler update can be reviewed and tested together with the app. The macOS 27 dependency baseline is:
+
+| Dependency | Version | Purpose |
+| --- | --- | --- |
+| [Slang](https://github.com/shader-slang/slang/releases/tag/v2026.18) | 2026.18 | Native Slang effects |
+| [glslang](https://formulae.brew.sh/formula/glslang) | 16.6.0 | RetroArch GLSL to SPIR-V |
+| [SPIRV-Cross](https://formulae.brew.sh/formula/spirv-cross) | 1.4.357.0 | SPIR-V to Metal |
+
+To inspect installed versions:
+
+```shell
+brew list --versions glslang spirv-cross
+"$HOME/Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc" -version
+```
+
+For a custom installation, `SLANG_PATH`, `GLSLANG_PATH`, and `SPIRV_CROSS_PATH` may point to the respective executables in the app's environment. `brew install slang` installs the unrelated S-Lang library, not the shader compiler.
+
+# Building from source
+
+Use Xcode 27 with its macOS 27 SDK. Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The app retains macOS 26 as its minimum deployment version. There are no Swift package dependencies to resolve; the shader compilers above are runtime dependencies.
 
 # Usage
 

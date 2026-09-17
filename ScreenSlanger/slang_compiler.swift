@@ -10,7 +10,7 @@ enum SlangCompilerError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .slangcNotFound:
-            return "slangc compiler not found. Please install Slang or set SLANG_PATH environment variable."
+            return "slangc compiler not found. Run scripts/setup-dependencies.sh or set SLANG_PATH to the compiler executable."
         case .compilationFailed(let message):
             return "Slang compilation failed: \(message)"
         case .invalidOutput:
@@ -86,6 +86,9 @@ class SlangCompiler {
     private static let slangcSearchPaths = [
         // Environment variable override
         ProcessInfo.processInfo.environment["SLANG_PATH"],
+        // Version managed by scripts/setup-dependencies.sh (also works when launched from Finder).
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc").path,
         // Homebrew installation
         "/opt/homebrew/bin/slangc",
         "/usr/local/bin/slangc",
