@@ -44,10 +44,61 @@ let defaultShaderSource: String = """
   """
 
 class Config: Codable {
-  var configVersion: Int = 4  // Bumped for multi-monitor support
+  static let currentVersion = 4
+  static let supportedFrameRates = 1...240
+
+  var configVersion: Int = Config.currentVersion
   var shaderPath: String? = nil
   var active: Bool = false
-  var targetFPS: Int = 60
+  private var storedTargetFPS: Int = 60
+  var targetFPS: Int {
+    get { storedTargetFPS }
+    set { storedTargetFPS = min(max(newValue, Self.supportedFrameRates.lowerBound), Self.supportedFrameRates.upperBound) }
+  }
+
+  private var fileURL: URL?
+  private var fileRequiringRecovery: URL?
+  private(set) var recoveryBackupURL: URL?
+
+  private enum CodingKeys: String, CodingKey {
+    case configVersion, shaderPath, active, targetFPS, shaderParameters
+    case enabledDisplayIDs, displaySelectionIsExplicit
+  }
+
+  init(fileURL: URL? = nil) {
+    self.fileURL = fileURL
+  }
+
+  required init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    let savedVersion = try values.decodeIfPresent(Int.self, forKey: .configVersion) ?? 1
+    guard savedVersion <= Self.currentVersion else {
+      throw DecodingError.dataCorruptedError(
+        forKey: .configVersion, in: values,
+        debugDescription: "Configuration was saved by a newer version of ScreenSlanger")
+    }
+
+    // New fields must use defaults when loading older configurations. Property
+    // initializers alone are not used by synthesized Codable decoding.
+    configVersion = Self.currentVersion
+    shaderPath = try values.decodeIfPresent(String.self, forKey: .shaderPath)
+    active = try values.decodeIfPresent(Bool.self, forKey: .active) ?? false
+    targetFPS = try values.decodeIfPresent(Int.self, forKey: .targetFPS) ?? 60
+    shaderParameters = try values.decodeIfPresent([String: [String: Float]].self, forKey: .shaderParameters) ?? [:]
+    enabledDisplayIDs = try values.decodeIfPresent(Set<UInt32>.self, forKey: .enabledDisplayIDs) ?? []
+    displaySelectionIsExplicit = try values.decodeIfPresent(Bool.self, forKey: .displaySelectionIsExplicit)
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(configVersion, forKey: .configVersion)
+    try values.encodeIfPresent(shaderPath, forKey: .shaderPath)
+    try values.encode(active, forKey: .active)
+    try values.encode(targetFPS, forKey: .targetFPS)
+    try values.encode(shaderParameters, forKey: .shaderParameters)
+    try values.encode(enabledDisplayIDs, forKey: .enabledDisplayIDs)
+    try values.encodeIfPresent(displaySelectionIsExplicit, forKey: .displaySelectionIsExplicit)
+  }
   
   /// Stored parameter values for RetroArch shaders, keyed by shader path then parameter name
   var shaderParameters: [String: [String: Float]] = [:]
@@ -99,42 +150,62 @@ class Config: Codable {
       .first!
     let directory = appSupportDir.appendingPathComponent("ScreenSlanger", isDirectory: true)
 
-    if !fileManager.fileExists(atPath: directory.path) {
-      try? fileManager.createDirectory(
-        at: directory, withIntermediateDirectories: true, attributes: nil)
-    }
-
     return directory.appendingPathComponent("config.json")
   }
 
-  func save() {
+  /// Returns false if the existing configuration could not be preserved or the
+  /// replacement could not be written. Callers should keep unsaved changes dirty.
+  @discardableResult
+  func save(fileURL: URL? = nil) -> Bool {
     do {
-      let fileURL = Config.getFileURL()
+      let destination = fileURL ?? self.fileURL ?? Config.getFileURL()
       let encoder = JSONEncoder()
       encoder.outputFormatting = .prettyPrinted
       let data = try encoder.encode(self)
-      try data.write(to: fileURL)
-      print("Saved config to \(fileURL)")
+      let fileManager = FileManager.default
+      try fileManager.createDirectory(
+        at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+      if let original = fileRequiringRecovery,
+        original.standardizedFileURL == destination.standardizedFileURL {
+        // A defaults-based session must not destroy an unreadable or future
+        // configuration. Refuse the save if its original bytes cannot be kept.
+        let backup = original.deletingPathExtension()
+          .appendingPathExtension("recovery-\(UUID().uuidString).json")
+        try fileManager.copyItem(at: original, to: backup)
+        recoveryBackupURL = backup
+        fileRequiringRecovery = nil
+        print("Preserved unreadable config at \(backup)")
+      }
+
+      // Foundation writes a sibling temporary file and replaces the destination,
+      // so interrupted writes cannot leave a partially encoded configuration.
+      try data.write(to: destination, options: .atomic)
+      print("Saved config to \(destination)")
+      return true
     } catch {
       print("Failed to save config: \(error)")
+      return false
     }
   }
 
-  static func load() -> Config {
-    let fileURL = getFileURL()
+  static func load(fileURL: URL? = nil) -> Config {
+    let fileURL = fileURL ?? getFileURL()
     var config: Config
     if !FileManager.default.fileExists(atPath: fileURL.path) {
       print("No config file found at \(fileURL)")
-      config = Config()
+      config = Config(fileURL: fileURL)
     } else {
       do {
         let data = try Data(contentsOf: fileURL)
         let decoder = JSONDecoder()
         config = try decoder.decode(Config.self, from: data)
+        config.fileURL = fileURL
         print("Loaded config from \(fileURL)")
       } catch {
-        print("Failed to load config, creating new: \(error)")
-        config = Config()
+        print("Failed to load config; the original will be preserved before saving: \(error)")
+        config = Config(fileURL: fileURL)
+        config.fileRequiringRecovery = fileURL
       }
     }
 

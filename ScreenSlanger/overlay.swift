@@ -10,12 +10,16 @@ class OverlayController: NSObject, @MainActor MTKViewDelegate {
   private var errorMessage: ErrorMessage
   private var window: NSWindow!
   private var screen: NSScreen
+  private let initialFrame: NSRect
+  private let initialScale: CGFloat
   private var screenCapture: ScreenCapture!
   private var renderer: MetalRenderer!
   private let pendingFrame = PendingCaptureFrame()
   private var isCleanedUp = false
 
   init(config: Config, metrics: Metrics, errorMessage: ErrorMessage, screen: NSScreen) {
+    self.initialFrame = screen.frame
+    self.initialScale = screen.backingScaleFactor
     self.config = config
     self.metrics = metrics
     self.errorMessage = errorMessage
@@ -158,6 +162,10 @@ class OverlayController: NSObject, @MainActor MTKViewDelegate {
   /// Get the screen this overlay is on
   func getScreen() -> NSScreen {
     return self.screen
+  }
+
+  func matchesDisplay(_ screen: NSScreen) -> Bool {
+    initialFrame == screen.frame && initialScale == screen.backingScaleFactor
   }
 }
 

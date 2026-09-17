@@ -10,6 +10,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private var overlayControllers: [CGDirectDisplayID: OverlayController] = [:]
   private var statusItem: NSStatusItem!
   private var configWindowController: ConfigWindowController?
+  private var configTimer: Timer?
+  private var metricsTimer: Timer?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // ScreenCaptureKit requests permission when an effect is activated. Keep
@@ -19,11 +21,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       timeInterval: 1.0, target: self, selector: #selector(saveConfigIfNeeded),
       userInfo: nil, repeats: true)
     RunLoop.current.add(configTimer, forMode: .common)
+    self.configTimer = configTimer
 
     let metricsTimer = Timer.scheduledTimer(
       timeInterval: 10.0, target: self, selector: #selector(updateMetrics),
       userInfo: nil, repeats: true)
     RunLoop.current.add(metricsTimer, forMode: .common)
+    self.metricsTimer = metricsTimer
+
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(displaysChanged),
+      name: NSApplication.didChangeScreenParametersNotification, object: nil)
+    NSWorkspace.shared.notificationCenter.addObserver(
+      self, selector: #selector(displaysChanged), name: NSWorkspace.didWakeNotification, object: nil)
 
     setupMenuBar()
     createMenuBarIcon()
@@ -35,10 +45,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
 
   @objc private func saveConfigIfNeeded() {
-    if self.configChanged {
-      self.config.save()
+    if self.configChanged && self.config.save() {
       self.configChanged = false
     }
+  }
+
+  func applicationWillTerminate(_ notification: Notification) {
+    configTimer?.invalidate()
+    metricsTimer?.invalidate()
+    saveConfigIfNeeded()
+    for controller in overlayControllers.values { controller.cleanup() }
+    NotificationCenter.default.removeObserver(self)
+    NSWorkspace.shared.notificationCenter.removeObserver(self)
+  }
+
+  @objc private func displaysChanged(_ notification: Notification) {
+    if notification.name == NSWorkspace.didWakeNotification {
+      for controller in overlayControllers.values { controller.cleanup() }
+      overlayControllers.removeAll()
+    }
+    refreshConfig()
   }
 
   @objc private func updateMetrics() {
@@ -68,7 +94,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // Remove controllers for displays that are no longer enabled
     let existingIDs = Set(overlayControllers.keys)
     for displayID in existingIDs {
-      if !enabledDisplayIDs.contains(displayID) {
+      if !enabledDisplayIDs.contains(displayID)
+        || screensByID[displayID].map({ !overlayControllers[displayID]!.matchesDisplay($0) }) == true {
         // Explicitly cleanup before removing
         overlayControllers[displayID]?.cleanup()
         overlayControllers.removeValue(forKey: displayID)
