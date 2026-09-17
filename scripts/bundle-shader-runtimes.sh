@@ -50,6 +50,10 @@ NOTICE
 
 sign_identity="${EXPANDED_CODE_SIGN_IDENTITY:--}"
 if [[ -z "$sign_identity" ]]; then sign_identity="-"; fi
+timestamp_option="--timestamp=none"
+if [[ "${EXPANDED_CODE_SIGN_IDENTITY_NAME:-}" == "Developer ID"* ]]; then
+    timestamp_option="--timestamp"
+fi
 
 prepare_binary() {
     local binary="$1"
@@ -74,7 +78,7 @@ prepare_binary() {
     if [[ "$sign_identity" == "-" ]]; then
         /usr/bin/codesign --force --sign - --timestamp=none "$binary"
     else
-        /usr/bin/codesign --force --sign "$sign_identity" --options runtime --timestamp "$binary"
+        /usr/bin/codesign --force --sign "$sign_identity" --options runtime "$timestamp_option" "$binary"
     fi
 }
 
@@ -85,7 +89,7 @@ prepare_binary "$slang_destination/MacOS/slangc"
 if [[ "$sign_identity" == "-" ]]; then
     /usr/bin/codesign --force --sign - --timestamp=none "$slang_bundle"
 else
-    /usr/bin/codesign --force --sign "$sign_identity" --options runtime --timestamp "$slang_bundle"
+    /usr/bin/codesign --force --sign "$sign_identity" --options runtime "$timestamp_option" "$slang_bundle"
 fi
 # This library is loaded by absolute bundle path, but give it a relocatable identity too.
 /usr/bin/install_name_tool -id '@rpath/librashader.dylib' "$frameworks_destination/librashader.dylib"
