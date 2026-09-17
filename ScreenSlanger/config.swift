@@ -68,6 +68,7 @@ class Config: Codable {
   }
   
   /// Toggle whether a display is enabled
+  @MainActor
   func toggleDisplay(_ displayID: CGDirectDisplayID) {
     let availableDisplayIDs = NSScreen.screens.compactMap { screen -> CGDirectDisplayID? in
       guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
@@ -191,6 +192,7 @@ class Config: Codable {
   }
   
   /// Apply stored values to a parameter state
+  @MainActor
   func applyStoredParameters(to state: ShaderParameterState) {
     let stored = getParameterValues()
     for (name, value) in stored {
@@ -199,6 +201,7 @@ class Config: Codable {
   }
   
   /// Save current parameter state to config
+  @MainActor
   func saveParameters(from state: ShaderParameterState) {
     for param in state.parameters {
       setParameterValue(name: param.name, value: state.getValue(for: param.name))

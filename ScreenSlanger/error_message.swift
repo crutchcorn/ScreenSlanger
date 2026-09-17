@@ -1,6 +1,7 @@
+@MainActor
 class ErrorMessage {
   private var message: String? = nil
-  var onMessageChanged: (() -> Void)? = nil
+  var onMessageChanged: (@MainActor () -> Void)? = nil
 
   func get() -> String? {
     return self.message

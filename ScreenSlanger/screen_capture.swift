@@ -1,13 +1,13 @@
 import ScreenCaptureKit
 
+@MainActor
 class ScreenCapture {
   var config: Config! = nil
   var excludedWindowIDs: [CGWindowID] = []
-  var onFrameReceived: (CVPixelBuffer) -> Void = { _ in }
-  var onError: (Error) -> Void = { _ in }
-  var onCaptureStopped: () -> Void = {}
+  var onFrameReceived: @Sendable (CVPixelBuffer) -> Void = { _ in }
+  var onError: @MainActor (Error) -> Void = { _ in }
+  var onCaptureStopped: @MainActor () -> Void = {}
 
-  private let stateLock = NSLock()
   private var session: CaptureSession?
   private var latestSessionID: UUID?
   private let streamQueue = DispatchQueue(label: "ScreenCaptureKitStreamQueue")
@@ -31,17 +31,15 @@ class ScreenCapture {
     let excludedWindowIDs = self.excludedWindowIDs
     let sessionID = UUID()
     let output = StreamOutput(onFrameReceived: self.onFrameReceived) { [weak self] error in
-      self?.captureStopped(sessionID: sessionID, error: error)
+      Task { @MainActor [weak self] in
+        self?.captureStopped(sessionID: sessionID, error: error)
+      }
     }
     let newSession = CaptureSession(
       id: sessionID, output: output,
       onError: self.onError, onCaptureStopped: self.onCaptureStopped)
 
-    stateLock.lock()
-    guard session == nil else {
-      stateLock.unlock()
-      return
-    }
+    guard session == nil else { return }
     session = newSession
     latestSessionID = sessionID
 
@@ -90,11 +88,9 @@ class ScreenCapture {
         }
       }
     }
-    stateLock.unlock()
   }
 
   func stopCapture() {
-    stateLock.lock()
     let stoppedSession = session
     session = nil
     // Also suppress a pending error/stopped callback from an earlier session.
@@ -102,7 +98,6 @@ class ScreenCapture {
     let startTask = stoppedSession?.startTask
     stoppedSession?.startTask = nil
     let stream = stoppedSession?.stream
-    stateLock.unlock()
 
     guard let stoppedSession = stoppedSession else { return }
     stoppedSession.output.invalidate()
@@ -124,8 +119,6 @@ class ScreenCapture {
   }
 
   private func isCurrentSession(_ candidate: CaptureSession) -> Bool {
-    stateLock.lock()
-    defer { stateLock.unlock() }
     return session === candidate
   }
 
@@ -143,8 +136,6 @@ class ScreenCapture {
   }
 
   private func finishStarting(_ candidate: CaptureSession, stream: SCStream) -> Bool {
-    stateLock.lock()
-    defer { stateLock.unlock() }
     guard session === candidate else { return false }
     candidate.stream = stream
     candidate.startTask = nil
@@ -152,24 +143,17 @@ class ScreenCapture {
   }
 
   private func captureStopped(sessionID: UUID, error: Error) {
-    stateLock.lock()
-    guard let stoppedSession = session, stoppedSession.id == sessionID else {
-      stateLock.unlock()
-      return
-    }
+    guard let stoppedSession = session, stoppedSession.id == sessionID else { return }
     session = nil
     let startTask = stoppedSession.startTask
     stoppedSession.startTask = nil
-    stateLock.unlock()
 
     stoppedSession.output.invalidate()
     startTask?.cancel()
 
     DispatchQueue.main.async { [weak self] in
       guard let self = self else { return }
-      self.stateLock.lock()
       let shouldNotify = self.latestSessionID == sessionID
-      self.stateLock.unlock()
       guard shouldNotify else { return }
 
       stoppedSession.onCaptureStopped()
@@ -183,18 +167,20 @@ class ScreenCapture {
   }
 }
 
+@MainActor
 private final class CaptureSession {
   let id: UUID
   let output: StreamOutput
-  let onError: (Error) -> Void
-  let onCaptureStopped: () -> Void
-  // Accessed only while ScreenCapture.stateLock is held.
+  let onError: @MainActor (Error) -> Void
+  let onCaptureStopped: @MainActor () -> Void
+  // Session transitions are confined to the main actor, including after awaits.
   var stream: SCStream?
   var startTask: Task<Void, Never>?
 
   init(
     id: UUID, output: StreamOutput,
-    onError: @escaping (Error) -> Void, onCaptureStopped: @escaping () -> Void
+    onError: @escaping @MainActor (Error) -> Void,
+    onCaptureStopped: @escaping @MainActor () -> Void
   ) {
     self.id = id
     self.output = output
@@ -203,13 +189,18 @@ private final class CaptureSession {
   }
 }
 
-private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate {
-  private let onFrameReceived: (CVPixelBuffer) -> Void
-  private let onStopped: (Error) -> Void
+// The callbacks are immutable and Sendable. callbackLock guards active and drains
+// any frame callback before invalidation returns, so stopped captures cannot refill the UI slot.
+private final class StreamOutput: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
+  private let onFrameReceived: @Sendable (CVPixelBuffer) -> Void
+  private let onStopped: @Sendable (Error) -> Void
   private let callbackLock = NSRecursiveLock()
   private var active = true
 
-  init(onFrameReceived: @escaping (CVPixelBuffer) -> Void, onStopped: @escaping (Error) -> Void) {
+  init(
+    onFrameReceived: @escaping @Sendable (CVPixelBuffer) -> Void,
+    onStopped: @escaping @Sendable (Error) -> Void
+  ) {
     self.onFrameReceived = onFrameReceived
     self.onStopped = onStopped
   }

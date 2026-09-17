@@ -1,6 +1,7 @@
 import AppKit
 
-class Metrics {
+// Every mutable field is accessed only on dispatchQueue, including reads.
+final class Metrics: @unchecked Sendable {
   private var nextFrameID: Int = 0
   private var screenCaptureTimestamps: [Int: Double] = [:]
   private var numRenders: Int = 0
@@ -8,9 +9,9 @@ class Metrics {
   private var prevUpdateTimestamp: Double = 0
   private let dispatchQueue = DispatchQueue(label: "metrics.dispatchQueue")
 
-  var screenCaptureFPS: Double = 0
-  var renderFPS: Double = 0
-  var averageLatency: Double = 0
+  private var screenCaptureFPS: Double = 0
+  private var renderFPS: Double = 0
+  private var averageLatency: Double = 0
 
   func newFrameID() -> Int {
     var frameID: Int!

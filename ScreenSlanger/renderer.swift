@@ -12,6 +12,7 @@ class MetalView: MTKView {
 }
 
 /// Shared Metal resources to avoid duplicating expensive objects across multiple renderers
+@MainActor
 class SharedMetalResources {
   static let shared = SharedMetalResources()
   
@@ -249,6 +250,7 @@ enum ActiveShaderType {
 }
 
 /// Holds the current state of shader parameters
+@MainActor
 class ShaderParameterState {
   var parameters: [ShaderParameter] = []
   var values: [String: Float] = [:]
@@ -275,6 +277,7 @@ class ShaderParameterState {
   }
 }
 
+@MainActor
 class MetalRenderer {
   private let shared = SharedMetalResources.shared
   private var textureCache: CVMetalTextureCache!
@@ -581,8 +584,9 @@ class MetalRenderer {
 
     // Core Video may recycle the capture surface before the GPU has sampled it.
     // Retain its texture wrapper and pixel buffer until this command finishes.
-    commandBuffer.addCompletedHandler { [textureRef, contentBuffer] _ in
-      withExtendedLifetime((textureRef, contentBuffer)) {}
+    let retainedSurface = RetainedCaptureSurface(texture: textureRef, buffer: contentBuffer)
+    commandBuffer.addCompletedHandler { _ in
+      withExtendedLifetime(retainedSurface) {}
     }
     commandBuffer.present(drawable)
     commandBuffer.commit()
@@ -633,4 +637,11 @@ class MetalRenderer {
     
     // Note: We don't need vertex uniforms since our custom vertex shader generates the quad procedurally
   }
+}
+
+/// A lifetime token for immutable capture surfaces read by the GPU. The completion
+/// handler only releases these references; it never accesses or modifies their pixels.
+private struct RetainedCaptureSurface: @unchecked Sendable {
+  let texture: CVMetalTexture
+  let buffer: CVPixelBuffer
 }

@@ -2,8 +2,9 @@ import AppKit
 import Metal
 import MetalKit
 
-class OverlayController: NSObject, MTKViewDelegate {
-  var onCaptureStopped: () -> Void = {}
+@MainActor
+class OverlayController: NSObject, @MainActor MTKViewDelegate {
+  var onCaptureStopped: @MainActor () -> Void = {}
   private var config: Config
   private var metrics: Metrics
   private var errorMessage: ErrorMessage
@@ -11,9 +12,7 @@ class OverlayController: NSObject, MTKViewDelegate {
   private var screen: NSScreen
   private var screenCapture: ScreenCapture!
   private var renderer: MetalRenderer!
-  private var contentBuffer: CVPixelBuffer?
-  private var frameID: Int?
-  private let dispatchQueue = DispatchQueue(label: "overlayController.queue")
+  private let pendingFrame = PendingCaptureFrame()
   private var isCleanedUp = false
 
   init(config: Config, metrics: Metrics, errorMessage: ErrorMessage, screen: NSScreen) {
@@ -48,8 +47,10 @@ class OverlayController: NSObject, MTKViewDelegate {
     self.screenCapture = ScreenCapture(screen: screen)
     self.screenCapture.config = self.config
     self.screenCapture.excludedWindowIDs = [CGWindowID(self.window.windowNumber)]
-    self.screenCapture.onFrameReceived = { [weak self] contentBuffer in
-      self?.receiveFrame(contentBuffer: contentBuffer)
+    self.screenCapture.onFrameReceived = { [pendingFrame, metrics] contentBuffer in
+      let frameID = metrics.newFrameID()
+      metrics.recordScreenCapture(frameID: frameID)
+      pendingFrame.store(buffer: contentBuffer, frameID: frameID)
     }
     self.screenCapture.onCaptureStopped = { [weak self] in
       guard let self = self, !self.isCleanedUp else { return }
@@ -81,27 +82,11 @@ class OverlayController: NSObject, MTKViewDelegate {
     // Stop screen capture
     self.screenCapture?.stopCapture()
     
-    // Drain any pending operations on our queue
-    self.dispatchQueue.sync {
-      self.contentBuffer = nil
-      self.frameID = nil
-    }
+    // stopCapture drains its callback before we discard the final pending frame.
+    self.pendingFrame.clear()
     
     // Close and release the window
     self.window?.orderOut(nil)
-  }
-
-  func receiveFrame(contentBuffer: CVPixelBuffer) {
-    let frameID = self.metrics.newFrameID()
-    self.metrics.recordScreenCapture(frameID: frameID)
-
-    self.dispatchQueue.async { [weak self] in
-      // stopCapture invalidates and drains the callback before cleanup clears
-      // this queue, so no unsynchronized read of UI state is needed here.
-      guard let self = self else { return }
-      self.frameID = frameID
-      self.contentBuffer = contentBuffer
-    }
   }
 
   func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
@@ -114,22 +99,9 @@ class OverlayController: NSObject, MTKViewDelegate {
   func render() {
     guard !isCleanedUp else { return }
     
-    var contentBuffer: CVPixelBuffer?
-    var frameID: Int?
-
-    self.dispatchQueue.sync {
-        contentBuffer = self.contentBuffer
-        frameID = self.frameID
-        self.frameID = nil
-        self.contentBuffer = nil
-    }
-    
-    // Double-check after sync in case cleanup happened while waiting
-    guard !isCleanedUp else { return }
-    
-    if let contentBuffer = contentBuffer, let frameID = frameID {
-      self.renderer.renderContentBuffer(window: self.window, contentBuffer: contentBuffer)
-      self.metrics.recordRender(frameID: frameID)
+    if let frame = self.pendingFrame.take() {
+      self.renderer.renderContentBuffer(window: self.window, contentBuffer: frame.buffer)
+      self.metrics.recordRender(frameID: frame.frameID)
     }
   }
 
@@ -161,10 +133,7 @@ class OverlayController: NSObject, MTKViewDelegate {
       self.window.orderFrontRegardless()
     } else {
       self.window.orderOut(nil)
-      self.dispatchQueue.sync {
-        self.contentBuffer = nil
-        self.frameID = nil
-      }
+      self.pendingFrame.clear()
     }
   }
   
@@ -189,5 +158,32 @@ class OverlayController: NSObject, MTKViewDelegate {
   /// Get the screen this overlay is on
   func getScreen() -> NSScreen {
     return self.screen
+  }
+}
+
+/// Transfers the latest read-only capture surface from ScreenCaptureKit to the UI.
+/// The lock protects the slot; retaining a pixel buffer keeps its IOSurface alive.
+/// Neither the capture callback nor renderer modifies the buffer's pixels.
+private final class PendingCaptureFrame: @unchecked Sendable {
+  private let lock = NSLock()
+  private var frame: (buffer: CVPixelBuffer, frameID: Int)?
+
+  func store(buffer: CVPixelBuffer, frameID: Int) {
+    lock.withLock {
+      frame = (buffer, frameID)
+    }
+  }
+
+  func take() -> (buffer: CVPixelBuffer, frameID: Int)? {
+    lock.withLock {
+      defer { frame = nil }
+      return frame
+    }
+  }
+
+  func clear() {
+    lock.withLock {
+      frame = nil
+    }
   }
 }

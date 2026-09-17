@@ -1,6 +1,7 @@
 import AppKit
 import CoreGraphics
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
   private var config: Config!
   private var configChanged: Bool = false
@@ -14,18 +15,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // ScreenCaptureKit requests permission when an effect is activated. Keep
     // Settings available if permission is denied so the user can retry later.
     self.config = Config.load()
-    let configTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-      if self.configChanged {
-        self.config.save()
-        self.configChanged = false
-      }
-    }
+    let configTimer = Timer.scheduledTimer(
+      timeInterval: 1.0, target: self, selector: #selector(saveConfigIfNeeded),
+      userInfo: nil, repeats: true)
     RunLoop.current.add(configTimer, forMode: .common)
 
-    let metricsTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { _ in
-      self.metrics.updateStats()
-      self.metrics.printStats()
-    }
+    let metricsTimer = Timer.scheduledTimer(
+      timeInterval: 10.0, target: self, selector: #selector(updateMetrics),
+      userInfo: nil, repeats: true)
     RunLoop.current.add(metricsTimer, forMode: .common)
 
     setupMenuBar()
@@ -35,6 +32,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     self.refreshConfig()
     self.openConfigWindow()
+  }
+
+  @objc private func saveConfigIfNeeded() {
+    if self.configChanged {
+      self.config.save()
+      self.configChanged = false
+    }
+  }
+
+  @objc private func updateMetrics() {
+    self.metrics.updateStats()
+    self.metrics.printStats()
   }
   
   /// Create overlay controllers for all enabled screens

@@ -2,11 +2,11 @@ import AppKit
 
 class ConfigViewController: NSViewController {
   var config: Config! = nil
-  var onConfigUpdate: () -> Void = {}
-  var onReloadShader: () -> Void = {}
+  var onConfigUpdate: @MainActor () -> Void = {}
+  var onReloadShader: @MainActor () -> Void = {}
   var errorMessage: ErrorMessage! = nil
   var parameterState: ShaderParameterState? = nil
-  var onParameterChanged: ((String, Float) -> Void)? = nil
+  var onParameterChanged: (@MainActor (String, Float) -> Void)? = nil
 
   private var stackView: NSStackView! = nil
   private var shaderPathField: NSTextField! = nil
@@ -379,10 +379,10 @@ class ConfigViewController: NSViewController {
 class ConfigWindowController: NSWindowController {
   var config: Config! = nil
   var errorMessage: ErrorMessage! = nil
-  var onConfigUpdate: () -> Void = {}
-  var onReloadShader: () -> Void = {}
+  var onConfigUpdate: @MainActor () -> Void = {}
+  var onReloadShader: @MainActor () -> Void = {}
   var parameterState: ShaderParameterState? = nil
-  var onParameterChanged: ((String, Float) -> Void)? = nil
+  var onParameterChanged: (@MainActor (String, Float) -> Void)? = nil
 
   private var configViewController: ConfigViewController! = ConfigViewController()
 
