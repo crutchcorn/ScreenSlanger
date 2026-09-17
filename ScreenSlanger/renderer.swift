@@ -472,17 +472,7 @@ class MetalRenderer {
       return
     }
 
-    let renderPassDescriptor = MTLRenderPassDescriptor()
-    renderPassDescriptor.colorAttachments[0].texture = drawable.texture
-    renderPassDescriptor.colorAttachments[0].loadAction = .clear
-    renderPassDescriptor.colorAttachments[0].storeAction = .store
-    renderPassDescriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-
-    guard let commandBuffer = shared.commandQueue.makeCommandBuffer(),
-      let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPassDescriptor)
-    else {
-      return
-    }
+    guard let commandBuffer = shared.commandQueue.makeCommandBuffer() else { return }
 
     // Set scissor rect to exclude the menu bar.
     // The scissor rect is relative to the drawable, not global screen coordinates.
@@ -517,70 +507,19 @@ class MetalRenderer {
       width: clampedWidth,
       height: clampedHeight
     )
-    encoder.setScissorRect(scissorRect)
-
-    if let renderPipeline = shared.renderPipeline {
-      encoder.setRenderPipelineState(renderPipeline)
-      
-      switch shared.activeShaderType {
-      case .retroArch:
-        // Set up RetroArch-style uniforms
-        encodeRetroArchUniforms(
-          encoder: encoder,
-          textureWidth: width,
-          textureHeight: height
-        )
-        
-        // Bind all textures based on their Metal bindings (parsed from generated code)
-        let samplers = shared.getTextureSamplers()
-        
-        // If no samplers were parsed, fallback to binding Source at index 0
-        if samplers.isEmpty {
-          encoder.setFragmentTexture(texture, index: 0)
-          encoder.setFragmentSamplerState(shared.samplerState, index: 0)
-        }
-        
-        for sampler in samplers {
-          if sampler.name == "Source" {
-            // Source is the screen capture texture
-            encoder.setFragmentTexture(texture, index: sampler.binding)
-            encoder.setFragmentSamplerState(shared.samplerState, index: sampler.binding)
-          } else if let loadedTexture = shared.getTexture(named: sampler.name) {
-            encoder.setFragmentTexture(loadedTexture, index: sampler.binding)
-            encoder.setFragmentSamplerState(shared.repeatSamplerState, index: sampler.binding)
-          } else {
-            // Use source texture as fallback to avoid validation errors
-            encoder.setFragmentTexture(texture, index: sampler.binding)
-            encoder.setFragmentSamplerState(shared.repeatSamplerState, index: sampler.binding)
-          }
-        }
-        
-      case .slang:
-        // Slang shaders use fixed texture binding at index 0
-        encoder.setFragmentTexture(texture, index: 0)
-        encoder.setFragmentSamplerState(shared.samplerState, index: 0)
-        
-        // Slang shaders expect a Uniforms struct at buffer(0)
-        let screenSize = vector_float2(Float(self.screen.frame.width), Float(self.screen.frame.height))
-        let mousePosition = vector_float2(
-          Float(NSEvent.mouseLocation.x), Float(NSEvent.mouseLocation.y))
-        let time = Float(ProcessInfo.processInfo.systemUptime - shared.baseTime)
-        
-        var uniforms = SlangUniforms(
-          screenSize: screenSize,
-          mousePosition: mousePosition,
-          time: time
-        )
-        encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
-        
-      case .none:
-        break
-      }
-
-      encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+    let context = ShaderFrameContext(
+      outputSize: SIMD2(Float(drawableWidth), Float(drawableHeight)),
+      mousePosition: SIMD2(
+        Float((NSEvent.mouseLocation.x - screenFrame.minX) * scaleFactor),
+        Float((NSEvent.mouseLocation.y - screenFrame.minY) * scaleFactor)),
+      time: Float(ProcessInfo.processInfo.systemUptime - shared.baseTime))
+    do {
+      try ShaderRenderCore(resources: shared).encode(
+        commandBuffer: commandBuffer, source: texture, destination: drawable.texture,
+        context: context, scissor: scissorRect)
+    } catch {
+      return
     }
-
-    encoder.endEncoding()
 
     // Core Video may recycle the capture surface before the GPU has sampled it.
     // Retain its texture wrapper and pixel buffer until this command finishes.
@@ -592,50 +531,93 @@ class MetalRenderer {
     commandBuffer.commit()
   }
   
-  /// Encode RetroArch-style uniforms for the shader
+}
+
+/// Inputs shared by onscreen drawing and offscreen regression tests, in pixels.
+struct ShaderFrameContext {
+  var outputSize: SIMD2<Float>
+  var mousePosition: SIMD2<Float> = .zero
+  var time: Float = 0
+  var frameCount: UInt32 = 0
+}
+
+enum ShaderRenderError: Error {
+  case noPipeline
+  case encoderUnavailable
+}
+
+/// The production texture binding and draw path. It does not depend on windows or capture.
+@MainActor
+final class ShaderRenderCore {
+  let resources: SharedMetalResources
+
+  init(resources: SharedMetalResources = .shared) {
+    self.resources = resources
+  }
+
+  func encode(
+    commandBuffer: MTLCommandBuffer, source: MTLTexture, destination: MTLTexture,
+    context: ShaderFrameContext, scissor: MTLScissorRect? = nil
+  ) throws {
+    guard let pipeline = resources.renderPipeline else { throw ShaderRenderError.noPipeline }
+    let pass = MTLRenderPassDescriptor()
+    pass.colorAttachments[0].texture = destination
+    pass.colorAttachments[0].loadAction = .clear
+    pass.colorAttachments[0].storeAction = .store
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+      throw ShaderRenderError.encoderUnavailable
+    }
+    defer { encoder.endEncoding() }
+    encoder.setRenderPipelineState(pipeline)
+    if let scissor { encoder.setScissorRect(scissor) }
+
+    switch resources.activeShaderType {
+    case .retroArch:
+      encodeRetroArchUniforms(encoder: encoder, source: source, context: context)
+      let samplers = resources.getTextureSamplers()
+      if samplers.isEmpty {
+        encoder.setFragmentTexture(source, index: 0)
+        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+      }
+      for sampler in samplers {
+        let texture = sampler.name == "Source" ? source
+          : resources.getTexture(named: sampler.name) ?? source
+        encoder.setFragmentTexture(texture, index: sampler.binding)
+        encoder.setFragmentSamplerState(
+          sampler.name == "Source" ? resources.samplerState : resources.repeatSamplerState,
+          index: sampler.binding)
+      }
+    case .slang:
+      encoder.setFragmentTexture(source, index: 0)
+      encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+      var uniforms = SlangUniforms(
+        screenSize: context.outputSize, mousePosition: context.mousePosition, time: context.time)
+      encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
+    case .none:
+      throw ShaderRenderError.noPipeline
+    }
+    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+  }
+
   private func encodeRetroArchUniforms(
-    encoder: MTLRenderCommandEncoder,
-    textureWidth: Int,
-    textureHeight: Int
+    encoder: MTLRenderCommandEncoder, source: MTLTexture, context: ShaderFrameContext
   ) {
-    let scaleFactor = self.screen.backingScaleFactor
-    let outputWidth = Float(self.screen.frame.width * scaleFactor)
-    let outputHeight = Float(self.screen.frame.height * scaleFactor)
-    let sourceWidth = Float(textureWidth)
-    let sourceHeight = Float(textureHeight)
-    
-    // Build the push constants buffer matching the shader's Push struct
-    // The order must match the shader's push_constant layout
-    var pushBuffer: [Float] = []
-    
-    // Add user-defined parameters from #pragma parameter
-    for param in parameterState.parameters {
-      pushBuffer.append(parameterState.getValue(for: param.name))
+    var pushBuffer = resources.parameterState.parameters.map {
+      resources.parameterState.getValue(for: $0.name)
     }
-    
-    // IMPORTANT: float4 members require 16-byte alignment in Metal
-    // After N floats, we need to pad to the next 16-byte boundary (4 floats)
-    // 7 floats = 28 bytes, next 16-byte boundary is 32 bytes (8 floats)
-    while pushBuffer.count % 4 != 0 {
-      pushBuffer.append(0)  // Padding for alignment
-    }
-    
-    // Add standard RetroArch parameters (OutputSize, OriginalSize, SourceSize)
-    // These are vec4s: xy = size, zw = 1.0/size
+    while pushBuffer.count % 4 != 0 { pushBuffer.append(0) }
+    let width = Float(source.width)
+    let height = Float(source.height)
+    let output = context.outputSize
     pushBuffer.append(contentsOf: [
-      outputWidth, outputHeight, 1.0 / outputWidth, 1.0 / outputHeight,  // OutputSize
-      sourceWidth, sourceHeight, 1.0 / sourceWidth, 1.0 / sourceHeight,  // OriginalSize
-      sourceWidth, sourceHeight, 1.0 / sourceWidth, 1.0 / sourceHeight   // SourceSize
+      output.x, output.y, 1 / output.x, 1 / output.y,
+      width, height, 1 / width, 1 / height,
+      width, height, 1 / width, 1 / height
     ])
-    
-    // Pad to 16-byte alignment
-    while pushBuffer.count % 4 != 0 {
-      pushBuffer.append(0)
+    pushBuffer.withUnsafeBytes { bytes in
+      encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: 0)
     }
-    
-    encoder.setFragmentBytes(pushBuffer, length: pushBuffer.count * MemoryLayout<Float>.stride, index: 0)
-    
-    // Note: We don't need vertex uniforms since our custom vertex shader generates the quad procedurally
   }
 }
 

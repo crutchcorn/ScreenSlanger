@@ -24,38 +24,24 @@ struct ShaderTests {
 
     @Test("Slang texture sampling preserves all four texels")
     func slangTextureSampling() throws {
-        let device = try #require(MTLCreateSystemDefaultDevice(), "A Metal device is required")
-        let pipeline = try MetalRenderer.buildRenderPipeline(
-            device: device, effectSource: fixtureSource("passthrough"))
-        let output = try render(device: device, pipeline: pipeline, pixels: inputPixels) { encoder in
-            var uniforms = SlangUniforms(screenSize: SIMD2<Float>(2, 2), mousePosition: .zero, time: 0)
-            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
-        }
+        let shared = SharedMetalResources.shared
+        defer { try? shared.setEffectSource(nil) }
+        try shared.setEffectSource(fixtureSource("passthrough"))
+        let output = try render()
         try expectPixels(output, expected: inputPixels)
     }
 
     @Test("RetroArch helper, texture binding, and push parameter render correctly")
     func retroArchParametersAndSampling() throws {
-        let device = try #require(MTLCreateSystemDefaultDevice(), "A Metal device is required")
+        let shared = SharedMetalResources.shared
+        defer { try? shared.setEffectSource(nil) }
         let fixture = try fixtureURL("retroarch-helper")
-        let source = try String(contentsOf: fixture, encoding: .utf8)
-        let (pipeline, parameters, samplers) = try MetalRenderer.buildRetroArchPipeline(
-            device: device, effectSource: source, shaderDirectory: fixture.deletingLastPathComponent())
-        try #require(parameters.count == 1, "Expected one GAIN parameter")
+        try shared.setEffectSource(String(contentsOf: fixture, encoding: .utf8), shaderPath: fixture.path)
+        let parameters = shared.parameterState.parameters
+        try #require(parameters.count == 1)
         #expect(parameters[0].name == "GAIN")
         #expect(parameters[0].defaultValue == 0.5)
-        let sourceSampler = try #require(
-            samplers.first(where: { $0.name == "Source" }), "Generated Metal lost the Source sampler binding")
-        let output = try render(
-            device: device, pipeline: pipeline, pixels: inputPixels, textureIndex: sourceSampler.binding
-        ) { encoder in
-            // Match the fixture's std430 layout: a float, padding, then three vec4s.
-            let push: [Float] = [parameters[0].defaultValue, 0, 0, 0,
-                                 2, 2, 0.5, 0.5, 2, 2, 0.5, 0.5, 2, 2, 0.5, 0.5]
-            push.withUnsafeBytes { bytes in
-                encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: 0)
-            }
-        }
+        let output = try render()
         let expected: [UInt8] = [
             0, 0, 128, 255, 0, 128, 0, 255,
             128, 0, 0, 255, 128, 128, 128, 255,
@@ -111,9 +97,27 @@ struct ShaderTests {
             shaderPath: fixture.path)
         let pipeline = try #require(shared.renderPipeline, "Edited shader did not create a pipeline")
         #expect(pipeline !== previous, "Edited shader reused the previous pipeline")
-        let output = try render(device: shared.device, pipeline: pipeline, pixels: inputPixels) { _ in }
+        let output = try render()
         let green: [UInt8] = [0, 255, 0, 255]
         try expectPixels(output, expected: Array(repeating: green, count: 4).flatMap { $0 })
+    }
+
+    @Test("Frame context drives production Slang uniforms without a new input image")
+    func nativeFrameContext() throws {
+        let shared = SharedMetalResources.shared
+        defer { try? shared.setEffectSource(nil) }
+        try shared.setEffectSource("""
+        float4 shaderFunction(ShaderInput input) {
+            return float4(input.time, input.mousePosition.x / input.screenSize.x,
+                          input.mousePosition.y / input.screenSize.y, 1.0);
+        }
+        """)
+        let first = try render(context: ShaderFrameContext(
+            outputSize: SIMD2(2, 2), mousePosition: SIMD2(1, 2), time: 0))
+        try expectPixels(first, expected: Array(repeating: [255, 128, 0, 255], count: 4).flatMap { $0 })
+        let second = try render(context: ShaderFrameContext(
+            outputSize: SIMD2(2, 2), mousePosition: SIMD2(1, 2), time: 1))
+        try expectPixels(second, expected: Array(repeating: [255, 128, 255, 255], count: 4).flatMap { $0 })
     }
 
     @Test("Invalid Slang returns a compiler diagnostic")
@@ -188,14 +192,9 @@ struct ShaderTests {
         let shared = SharedMetalResources.shared
         defer { try? shared.setEffectSource(nil) }
         try shared.setEffectSource(preset, shaderPath: presetURL.path)
-        let texture = try #require(shared.getTexture(named: "BACKGROUND"), "Preset did not load its texture")
+        _ = try #require(shared.getTexture(named: "BACKGROUND"), "Preset did not load its texture")
         let pipeline = try #require(shared.renderPipeline, "Preset did not create its pipeline")
-        let binding = try #require(
-            shared.getTextureSamplers().first(where: { $0.name == "BACKGROUND" })?.binding,
-            "Preset did not create its texture sampler")
-        let output = try render(
-            device: shared.device, pipeline: pipeline, pixels: [], textureIndex: binding, sourceTexture: texture
-        ) { _ in }
+        let output = try render()
         let pixel: [UInt8] = grayscale ? [128, 128, 128, 255] : [0, 0, 255, 255]
         try expectPixels(output, expected: Array(repeating: pixel, count: 4).flatMap { $0 })
 
@@ -209,9 +208,7 @@ struct ShaderTests {
             try shared.setEffectSource(preset, shaderPath: presetURL.path)
             let reloadedPipeline = try #require(shared.renderPipeline, "Preset reload did not create a pipeline")
             #expect(reloadedPipeline !== pipeline, "Preset reload reused the previous shader pipeline")
-            let reloadedOutput = try render(
-                device: shared.device, pipeline: reloadedPipeline, pixels: [], sourceTexture: texture
-            ) { _ in }
+            let reloadedOutput = try render()
             let green: [UInt8] = [0, 255, 0, 255]
             try expectPixels(reloadedOutput, expected: Array(repeating: green, count: 4).flatMap { $0 })
         }
@@ -226,45 +223,23 @@ struct ShaderTests {
     }
 
     private func render(
-        device: MTLDevice,
-        pipeline: MTLRenderPipelineState,
-        pixels: [UInt8],
-        textureIndex: Int = 0,
-        sourceTexture: MTLTexture? = nil,
-        uniforms: (MTLRenderCommandEncoder) -> Void
+        context: ShaderFrameContext = ShaderFrameContext(outputSize: SIMD2(2, 2))
     ) throws -> [UInt8] {
+        let shared = SharedMetalResources.shared
+        let device = shared.device
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: 2, height: 2, mipmapped: false)
         descriptor.storageMode = .shared
         descriptor.usage = [.shaderRead, .renderTarget]
-        let source = try #require(sourceTexture ?? device.makeTexture(descriptor: descriptor))
+        let source = try #require(device.makeTexture(descriptor: descriptor))
         let destination = try #require(device.makeTexture(descriptor: descriptor))
-        let queue = try #require(device.makeCommandQueue())
-        let commands = try #require(queue.makeCommandBuffer())
+        let commands = try #require(shared.commandQueue.makeCommandBuffer())
         let region = MTLRegionMake2D(0, 0, 2, 2)
-        if sourceTexture == nil {
-            try #require(pixels.count == 16, "Rendering a 2×2 BGRA texture requires 16 bytes")
-            pixels.withUnsafeBytes { bytes in
-                source.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: 8)
-            }
+        inputPixels.withUnsafeBytes { bytes in
+            source.replace(region: region, mipmapLevel: 0, withBytes: bytes.baseAddress!, bytesPerRow: 8)
         }
-        let samplerDescriptor = MTLSamplerDescriptor()
-        samplerDescriptor.minFilter = .nearest
-        samplerDescriptor.magFilter = .nearest
-        samplerDescriptor.sAddressMode = .clampToEdge
-        samplerDescriptor.tAddressMode = .clampToEdge
-        let sampler = try #require(device.makeSamplerState(descriptor: samplerDescriptor))
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = destination
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        let encoder = try #require(commands.makeRenderCommandEncoder(descriptor: pass))
-        encoder.setRenderPipelineState(pipeline)
-        encoder.setFragmentTexture(source, index: textureIndex)
-        encoder.setFragmentSamplerState(sampler, index: textureIndex)
-        uniforms(encoder)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
-        encoder.endEncoding()
+        try ShaderRenderCore(resources: shared).encode(
+            commandBuffer: commands, source: source, destination: destination, context: context)
         commands.commit()
         commands.waitUntilCompleted()
         if let error = commands.error { throw error }
