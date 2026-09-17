@@ -1,0 +1,30 @@
+{
+  "configurations" : [
+    {
+      "id" : "7AB3BF6C-EF95-49C5-85DA-DDF1F27CB355",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "codeCoverage" : false,
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:ScreenSlanger.xcodeproj",
+      "identifier" : "4159FE5B2D497D4400B79670",
+      "name" : "ScreenSlanger"
+    }
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:ScreenSlanger.xcodeproj",
+        "identifier" : "97FE7FB9305CA699001601EC",
+        "name" : "ScreenSlangerTests"
+      }
+    }
+  ],
+  "version" : 1
+}

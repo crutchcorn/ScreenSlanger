@@ -53,16 +53,15 @@ For a custom installation, `SLANG_PATH`, `GLSLANG_PATH`, and `SPIRV_CROSS_PATH` 
 
 # Building from source
 
-Use Xcode 27 with its macOS 27 SDK. Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The app retains macOS 26 as its minimum deployment version. There are no Swift package dependencies to resolve; the shader compilers above are runtime dependencies.
+Use Xcode 27 with its Swift 6.4 compiler and macOS 27 SDK. All targets use Swift 6 language mode, including its strict concurrency checks. Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The app retains macOS 26 as its minimum deployment version. There are no Swift package dependencies to resolve; the shader compilers above are runtime dependencies.
 
-Run the regression checks after updating the compilers:
+Run the native Swift Testing suite after updating the compilers. In Xcode, use **Product → Test** (⌘U), or run:
 
 ```shell
-./scripts/check-config.sh
-./scripts/check-shaders.sh
+xcodebuild test -project ScreenSlanger.xcodeproj -scheme ScreenSlanger -destination 'platform=macOS'
 ```
 
-The shader checks require a Mac with access to its Metal GPU. They compile the app's shader adapters, render known pixels through native Slang and RetroArch pipelines, and check texture loading, reloads, and compiler errors. The configuration checks verify display selection and compatibility with existing saved settings. Both scripts build in temporary directories.
+The 17 tests require a Mac with access to its Metal GPU and the shader compilers installed above. They compile the app's production sources, render known pixels through native Slang and RetroArch pipelines, and check texture loading, reloads, compiler errors, and saved display selections. The test bundle runs without launching the app or reading or changing your saved settings. Xcode also builds a test-only Swift executable, `ShaderCompilerProbe`, to verify that large compiler output cannot deadlock the test runner. Fixtures are bundled, and generated files use temporary directories.
 
 # Usage
 
