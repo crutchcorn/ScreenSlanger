@@ -3,6 +3,7 @@ import Metal
 import MetalKit
 
 class OverlayController: NSObject, MTKViewDelegate {
+  var onCaptureStopped: () -> Void = {}
   private var config: Config
   private var metrics: Metrics
   private var errorMessage: ErrorMessage
@@ -38,9 +39,9 @@ class OverlayController: NSObject, MTKViewDelegate {
 
     let metalView = MetalView(frame: NSRect(origin: .zero, size: contentRect.size))
     metalView.delegate = self
+    metalView.isPaused = true
     metalView.wantsLayer = true
     self.window.contentView = metalView
-    self.window.makeKeyAndOrderFront(nil)
 
     self.renderer = MetalRenderer(metalLayer: metalView.metalLayer, screen: screen)
 
@@ -49,6 +50,15 @@ class OverlayController: NSObject, MTKViewDelegate {
     self.screenCapture.excludedWindowIDs = [CGWindowID(self.window.windowNumber)]
     self.screenCapture.onFrameReceived = { [weak self] contentBuffer in
       self?.receiveFrame(contentBuffer: contentBuffer)
+    }
+    self.screenCapture.onCaptureStopped = { [weak self] in
+      guard let self = self, !self.isCleanedUp else { return }
+      self.setActive(false)
+      self.onCaptureStopped()
+    }
+    self.screenCapture.onError = { [weak self] error in
+      guard let self = self, !self.isCleanedUp else { return }
+      self.errorMessage.set("Screen capture failed: \(error.localizedDescription)")
     }
   }
   
@@ -137,14 +147,25 @@ class OverlayController: NSObject, MTKViewDelegate {
     } catch {
       print("Effect shader error: \(error.localizedDescription)")
       self.errorMessage.set(error.localizedDescription)
+      self.setActive(false)
+      return
     }
 
-    // TODO: The window is briefly visible with the previous effect applied.
-    // self.window.setIsVisible(active)
-    // self.screenCapture.setCapturing(active)
+    self.setActive(self.config.active && activeShader != nil)
+  }
 
-    self.window.setIsVisible(true)
-    self.screenCapture.setCapturing(true)
+  private func setActive(_ active: Bool) {
+    self.screenCapture.setCapturing(active)
+    (self.window.contentView as? MTKView)?.isPaused = !active
+    if active {
+      self.window.orderFrontRegardless()
+    } else {
+      self.window.orderOut(nil)
+      self.dispatchQueue.sync {
+        self.contentBuffer = nil
+        self.frameID = nil
+      }
+    }
   }
   
   /// Get the current parameter state from the renderer

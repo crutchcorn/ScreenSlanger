@@ -569,6 +569,11 @@ class MetalRenderer {
 
     encoder.endEncoding()
 
+    // Core Video may recycle the capture surface before the GPU has sampled it.
+    // Retain its texture wrapper and pixel buffer until this command finishes.
+    commandBuffer.addCompletedHandler { [textureRef, contentBuffer] _ in
+      withExtendedLifetime((textureRef, contentBuffer)) {}
+    }
     commandBuffer.present(drawable)
     commandBuffer.commit()
   }

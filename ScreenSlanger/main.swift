@@ -11,13 +11,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private var configWindowController: ConfigWindowController?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
-    if CGRequestScreenCaptureAccess() {
-      print("Screen capture access granted.")
-    } else {
-      print("Screen capture access denied.")
-      NSApp.terminate(nil)
-    }
-    
+    // ScreenCaptureKit requests permission when an effect is activated. Keep
+    // Settings available if permission is denied so the user can retry later.
     self.config = Config.load()
     let configTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
       if self.configChanged {
@@ -80,6 +75,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
           errorMessage: self.errorMessage,
           screen: screen
         )
+        controller.onCaptureStopped = { [weak self] in
+          guard let self = self else { return }
+          self.config.active = false
+          self.refreshConfig()
+        }
         overlayControllers[displayID] = controller
       }
     }
