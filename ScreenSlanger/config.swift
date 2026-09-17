@@ -53,12 +53,15 @@ class Config: Codable {
   var shaderParameters: [String: [String: Float]] = [:]
   
   /// Set of display IDs that should have the shader applied (CGDirectDisplayID as UInt32)
-  /// If empty, all displays are enabled by default
+  /// Legacy configurations use an empty set to enable all displays by default.
   var enabledDisplayIDs: Set<UInt32> = []
+  /// Optional so existing saved configurations retain their original selection behavior.
+  /// Once the user selects displays, an empty set means no displays are enabled.
+  var displaySelectionIsExplicit: Bool? = nil
   
   /// Returns whether the given display should have the shader applied
   func isDisplayEnabled(_ displayID: CGDirectDisplayID) -> Bool {
-    if enabledDisplayIDs.isEmpty {
+    if enabledDisplayIDs.isEmpty && displaySelectionIsExplicit != true {
       return true  // All enabled by default
     }
     return enabledDisplayIDs.contains(UInt32(displayID))
@@ -66,23 +69,27 @@ class Config: Codable {
   
   /// Toggle whether a display is enabled
   func toggleDisplay(_ displayID: CGDirectDisplayID) {
-    let id = UInt32(displayID)
-    if enabledDisplayIDs.isEmpty {
-      // First time toggling - populate with all current displays, then remove this one
-      var maxDisplays: UInt32 = 16
-      var activeDisplays = [CGDirectDisplayID](repeating: 0, count: Int(maxDisplays))
-      var displayCount: UInt32 = 0
-      CGGetActiveDisplayList(maxDisplays, &activeDisplays, &displayCount)
-      
-      for i in 0..<Int(displayCount) {
-        enabledDisplayIDs.insert(UInt32(activeDisplays[i]))
+    let availableDisplayIDs = NSScreen.screens.compactMap { screen -> CGDirectDisplayID? in
+      guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else {
+        return nil
       }
+      return CGDirectDisplayID(number.uint32Value)
+    }
+    toggleDisplay(displayID, availableDisplayIDs: availableDisplayIDs)
+  }
+
+  func toggleDisplay(_ displayID: CGDirectDisplayID, availableDisplayIDs: [CGDirectDisplayID]) {
+    let id = UInt32(displayID)
+    if enabledDisplayIDs.isEmpty && displaySelectionIsExplicit != true {
+      // Convert the default "all" selection into the current explicit selection.
+      enabledDisplayIDs = Set(availableDisplayIDs.map { UInt32($0) })
       enabledDisplayIDs.remove(id)
     } else if enabledDisplayIDs.contains(id) {
       enabledDisplayIDs.remove(id)
     } else {
       enabledDisplayIDs.insert(id)
     }
+    displaySelectionIsExplicit = true
   }
 
   static func getFileURL() -> URL {
