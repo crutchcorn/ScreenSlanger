@@ -92,13 +92,13 @@ class OverlayController: NSObject, MTKViewDelegate {
   }
 
   func receiveFrame(contentBuffer: CVPixelBuffer) {
-    guard !isCleanedUp else { return }
-    
     let frameID = self.metrics.newFrameID()
     self.metrics.recordScreenCapture(frameID: frameID)
 
     self.dispatchQueue.async { [weak self] in
-      guard let self = self, !self.isCleanedUp else { return }
+      // stopCapture invalidates and drains the callback before cleanup clears
+      // this queue, so no unsynchronized read of UI state is needed here.
+      guard let self = self else { return }
       self.frameID = frameID
       self.contentBuffer = contentBuffer
     }
