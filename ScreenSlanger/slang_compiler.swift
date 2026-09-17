@@ -14,7 +14,7 @@ enum SlangCompilerError: Error, LocalizedError {
     var errorDescription: String? {
         switch self {
         case .slangcNotFound:
-            return "slangc compiler not found. Run scripts/setup-dependencies.sh or set SLANG_PATH to the compiler executable."
+            return "ScreenSlanger’s shader compiler is missing. Reinstall the app, or rebuild it with its bundled shader dependencies."
         case .compilationFailed(let message):
             return "Slang compilation failed: \(message)"
         case .invalidOutput:
@@ -76,13 +76,6 @@ struct ShaderParameter: Sendable {
             stepValue: stepValue
         )
     }
-}
-
-/// Result of preprocessing a RetroArch-style shader
-struct PreprocessedShader: Sendable {
-    let source: String
-    let parameters: [ShaderParameter]
-    let isRetroArchStyle: Bool
 }
 
 /// Shared between a UI task and its synchronous compiler worker. The compiler owns
@@ -147,21 +140,34 @@ func runShaderCompilerProcess(
 /// Wrapper for the Slang shader compiler
 class SlangCompiler {
     
-    /// Read the override on each request, and resolve managed installation symlinks
-    /// in the cache identity so an upgraded compiler never reuses an old artifact.
-    static func findSlangc() -> String? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let paths = [
-            ProcessInfo.processInfo.environment["SLANG_PATH"],
-            home.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc").path,
-            "/opt/homebrew/bin/slangc",
-            "/usr/local/bin/slangc",
-            Bundle.main.path(forResource: "slangc", ofType: nil),
-            "/usr/local/slang/bin/slangc",
-            home.appendingPathComponent(".slang/bin/slangc").path,
-            home.appendingPathComponent("slang/bin/slangc").path
-        ].compactMap { $0 }
-        return paths.first { FileManager.default.isExecutableFile(atPath: $0) }
+    /// App copies always use their own compiler and adjacent libraries. Developer
+    /// overrides remain useful for the unhosted test runner and command-line tools.
+    /// Resolve the bundle each time so moving the app never depends on its old path.
+    static func findSlangc(
+        bundle: Bundle = .main,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
+    ) -> String? {
+        let embedded = bundle.bundleURL.appendingPathComponent("Contents/Helpers/Slang.app/Contents/MacOS/slangc").path
+        let paths: [String]
+        if bundle.bundleURL.pathExtension.lowercased() == "app" {
+            // A broken distribution must fail visibly rather than silently depending
+            // on something installed only on its developer's machine.
+            paths = [embedded]
+        } else {
+            paths = [
+                embedded,
+                environment["SLANG_PATH"],
+                homeDirectory.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc").path,
+                "/opt/homebrew/bin/slangc",
+                "/usr/local/bin/slangc"
+            ].compactMap { $0 }
+        }
+        return paths.first { path in
+            let url = URL(fileURLWithPath: path)
+            return FileManager.default.isExecutableFile(atPath: path)
+                && (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
     }
 
     private struct CachedCompilation: Sendable {
@@ -180,9 +186,10 @@ class SlangCompiler {
 
     /// Search directory timestamps catch newly added files that can shadow a previous
     /// include/import. Dependency contents (not timestamps) catch edits to existing files.
-    private static func directorySnapshot(_ roots: [URL]) -> [URL: Date] {
+    private static func directorySnapshot(_ roots: [URL], cancellation: ShaderCompilationCancellation?) throws -> [URL: Date] {
         var snapshot: [URL: Date] = [:]
         for root in roots {
+            try cancellation?.checkCancellation()
             if let date = try? root.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate {
                 snapshot[root] = date
             }
@@ -190,6 +197,7 @@ class SlangCompiler {
                 at: root, includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
                 options: []) else { continue }
             for case let directory as URL in directories {
+                try cancellation?.checkCancellation()
                 if directory.lastPathComponent == ".git" { directories.skipDescendants(); continue }
                 if let values = try? directory.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]),
                    values.isDirectory == true, let date = values.contentModificationDate {
@@ -273,13 +281,15 @@ class SlangCompiler {
         var seen = Set<URL>()
         roots = roots.filter { seen.insert($0).inserted }
         let keyParts = [slangSource, entryPoint, stage, sourceURL?.path ?? "", compilerURL.path,
-                        String(describing: attributes[.modificationDate]), String(describing: attributes[.size]),
+                        String((attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0),
+                        String(describing: attributes[.size]),
                         libraryIdentity] + roots.map(\.path)
         let key = digest(try JSONEncoder().encode(keyParts)).base64EncodedString()
-        let directories = directorySnapshot(roots)
+        let directories = try directorySnapshot(roots, cancellation: cancellation)
         if let cached = cache.withLock({ $0[key] }), cached.searchDirectories == directories,
-           cached.dependencies.allSatisfy({ url, fingerprint in
-               (try? Data(contentsOf: url)).map(digest) == fingerprint
+           try cached.dependencies.allSatisfy({ url, fingerprint in
+               try cancellation?.checkCancellation()
+               return (try? Data(contentsOf: url)).map(digest) == fingerprint
            }) {
             try cancellation?.checkCancellation()
             return cached.metalSource
@@ -327,13 +337,14 @@ class SlangCompiler {
             var fingerprints: [URL: Data] = [:]
             var stable = true
             for url in paths {
+                try cancellation?.checkCancellation()
                 guard let data = try? Data(contentsOf: url),
                       let date = try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
                       date <= startedAt else { stable = false; break }
                 fingerprints[url] = digest(data)
             }
             // Do not cache a compile raced by filesystem changes or an incomplete depfile.
-            if stable && !dependencies.isEmpty && directorySnapshot(roots) == directories {
+            if stable, !dependencies.isEmpty, try directorySnapshot(roots, cancellation: cancellation) == directories {
                 let entry = CachedCompilation(metalSource: metalSource, dependencies: fingerprints,
                                               searchDirectories: directories)
                 cache.withLock {

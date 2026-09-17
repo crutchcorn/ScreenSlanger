@@ -118,7 +118,7 @@ struct NativeCompilerTests {
 
     @Test("Native imports track transitive includes and invalidate cached output")
     func importAndTransitiveIncludeChanges() throws {
-        try #require(SlangCompiler.isAvailable, "Install the compiler with scripts/setup-dependencies.sh")
+        try #require(SlangCompiler.isAvailable, "Build the bundled shader dependencies before running unhosted compiler tests")
         try withDirectory { directory in
             let effect = directory.appendingPathComponent("effect.slang")
             let module = directory.appendingPathComponent("gain.slang")
@@ -135,8 +135,10 @@ struct NativeCompilerTests {
             let first = try compile()
             #expect(first.contains("0.25f"))
             #expect(try compile() == first)
-            // An atomic save replaces the included file without changing the root source.
-            try "float gain() { return 0.75; }".write(to: include, atomically: true, encoding: .utf8)
+            // In-place edits with preserved timestamps still invalidate by content.
+            let date = try FileManager.default.attributesOfItem(atPath: include.path)[.modificationDate]
+            try "float gain() { return 0.75; }".write(to: include, atomically: false, encoding: .utf8)
+            try FileManager.default.setAttributes([.modificationDate: try #require(date)], ofItemAtPath: include.path)
             let changed = try compile()
             #expect(changed.contains("0.75f"))
             #expect(changed != first)
@@ -172,6 +174,14 @@ struct NativeCompilerTests {
                 slangSource: SlangCompiler.wrapEffectSource(source, sourceURL: effect),
                 sourceURL: effect, includeDirectories: [includes])
             #expect(output.contains("effectColor"))
+            // A new local header takes precedence over the previously resolved include root.
+            try "float4 effectColor() { return float4(0.5,0,0,1); }"
+                .write(to: sourceDirectory.appendingPathComponent("color.slangh"), atomically: true, encoding: .utf8)
+            let shadowed = try SlangCompiler.compileToMetal(
+                slangSource: SlangCompiler.wrapEffectSource(source, sourceURL: effect),
+                sourceURL: effect, includeDirectories: [includes])
+            #expect(shadowed.contains("0.5f"))
+            #expect(shadowed != output)
             do {
                 _ = try SlangCompiler.compileToMetal(slangSource: SlangCompiler.wrapEffectSource(
                     "// original line one\nfloat4 shaderFunction(ShaderInput input) { return missingOriginalSymbol; }",
@@ -191,5 +201,100 @@ struct NativeCompilerTests {
             from: "shader.metal: nested\\ header.slangh escaped\\#name.slang dollar$$name.slang \\\n module.slang\n",
             relativeTo: directory)
         #expect(paths.map(\.lastPathComponent) == ["nested header.slangh", "escaped#name.slang", "dollar$name.slang", "module.slang"])
+    }
+}
+
+
+struct CompilerLocationTests {
+    private func withFixture(_ body: (URL) throws -> Void) throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Compiler bundle fixture \(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try body(directory)
+    }
+
+    private func fixtureBundle(at url: URL) throws -> Bundle {
+        let contents = url.appendingPathComponent("Contents")
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        let info: [String: String] = [
+            "CFBundlePackageType": url.pathExtension == "app" ? "APPL" : "BNDL", "CFBundleIdentifier": "io.github.crutchcorn.compiler-fixture",
+            "CFBundleName": "Compiler Fixture", "CFBundleExecutable": "CompilerFixture"
+        ]
+        let plist = try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+        try plist.write(to: contents.appendingPathComponent("Info.plist"))
+        return try #require(Bundle(url: url))
+    }
+
+    private func executable(at url: URL, executable: Bool = true) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("compiler fixture".utf8).write(to: url)
+        try FileManager.default.setAttributes([.posixPermissions: executable ? 0o755 : 0o644], ofItemAtPath: url.path)
+    }
+
+    @Test("The app's bundled compiler takes precedence over development overrides")
+    func bundledCompilerWins() throws {
+        try withFixture { directory in
+            let bundle = try fixtureBundle(at: directory.appendingPathComponent("ScreenSlanger.app"))
+            let embedded = bundle.bundleURL.appendingPathComponent("Contents/Helpers/Slang.app/Contents/MacOS/slangc")
+            let override = directory.appendingPathComponent("other-slangc")
+            try executable(at: embedded)
+            try executable(at: override)
+            let found = SlangCompiler.findSlangc(bundle: bundle,
+                environment: ["SLANG_PATH": override.path], homeDirectory: directory)
+            #expect(found == embedded.path)
+        }
+    }
+
+    @Test("Moving the app retains compiler discovery without an installation or environment override")
+    func relocatedBundleIsSelfContained() throws {
+        try withFixture { directory in
+            let original = directory.appendingPathComponent("Original.app")
+            let bundle = try fixtureBundle(at: original)
+            let relativeCompiler = "Contents/Helpers/Slang.app/Contents/MacOS/slangc"
+            try executable(at: bundle.bundleURL.appendingPathComponent(relativeCompiler))
+            let relocated = directory.appendingPathComponent("Moved app.app")
+            try FileManager.default.moveItem(at: original, to: relocated)
+            let movedBundle = try #require(Bundle(url: relocated))
+            let found = SlangCompiler.findSlangc(bundle: movedBundle, environment: [:],
+                                               homeDirectory: directory.appendingPathComponent("empty-home"))
+            #expect(found == relocated.appendingPathComponent(relativeCompiler).path)
+            #expect(!FileManager.default.fileExists(atPath: original.path))
+        }
+    }
+
+    @Test("An incomplete app never borrows a developer's compiler")
+    func incompleteAppCannotUseDeveloperFallback() throws {
+        try withFixture { directory in
+            let bundle = try fixtureBundle(at: directory.appendingPathComponent("Incomplete.app"))
+            let embedded = bundle.bundleURL.appendingPathComponent("Contents/Helpers/Slang.app/Contents/MacOS/slangc")
+            let override = directory.appendingPathComponent("developer-slangc")
+            let managed = directory.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc")
+            try executable(at: override)
+            try executable(at: managed)
+            #expect(SlangCompiler.findSlangc(bundle: bundle,
+                environment: ["SLANG_PATH": override.path], homeDirectory: directory) == nil)
+            try executable(at: embedded, executable: false)
+            #expect(SlangCompiler.findSlangc(bundle: bundle,
+                environment: ["SLANG_PATH": override.path], homeDirectory: directory) == nil)
+        }
+    }
+
+    @Test("Unhosted tools use an explicit compiler when no executable is bundled")
+    func developerOverrideFallback() throws {
+        try withFixture { directory in
+            let bundle = try fixtureBundle(at: directory.appendingPathComponent("Unhosted.bundle"))
+            let embedded = bundle.bundleURL.appendingPathComponent("Contents/Helpers/Slang.app/Contents/MacOS/slangc")
+            let override = directory.appendingPathComponent("developer-slangc")
+            try executable(at: embedded, executable: false)
+            try executable(at: override)
+            #expect(SlangCompiler.findSlangc(bundle: bundle,
+                environment: ["SLANG_PATH": override.path], homeDirectory: directory) == override.path)
+            // An executable directory is not a compiler, even when its permissions allow traversal.
+            try FileManager.default.removeItem(at: embedded)
+            try FileManager.default.createDirectory(at: embedded, withIntermediateDirectories: true)
+            #expect(SlangCompiler.findSlangc(bundle: bundle,
+                environment: ["SLANG_PATH": override.path], homeDirectory: directory) == override.path)
+        }
     }
 }

@@ -17,7 +17,7 @@ let defaultShaderSource: String = """
     // The current position of the mouse cursor in pixels, with (0,0) at
     // the bottom left of the screen.
     float2 mousePosition;
-    // The elapsed time since the system started in seconds.
+    // The elapsed time since the app initialized its renderer, in seconds.
     float time;
   };
 
@@ -44,12 +44,13 @@ let defaultShaderSource: String = """
   """
 
 class Config: Codable {
-  static let currentVersion = 4
+  static let currentVersion = 5
   static let supportedFrameRates = 1...240
 
   var configVersion: Int = Config.currentVersion
   var shaderPath: String? = nil
   var active: Bool = false
+  var animateWhenIdle: Bool = true
   private var storedTargetFPS: Int = 60
   var targetFPS: Int {
     get { storedTargetFPS }
@@ -61,7 +62,7 @@ class Config: Codable {
   private(set) var recoveryBackupURL: URL?
 
   private enum CodingKeys: String, CodingKey {
-    case configVersion, shaderPath, active, targetFPS, shaderParameters
+    case configVersion, shaderPath, active, targetFPS, animateWhenIdle, shaderParameters
     case enabledDisplayIDs, displaySelectionIsExplicit
   }
 
@@ -84,6 +85,7 @@ class Config: Codable {
     shaderPath = try values.decodeIfPresent(String.self, forKey: .shaderPath)
     active = try values.decodeIfPresent(Bool.self, forKey: .active) ?? false
     targetFPS = try values.decodeIfPresent(Int.self, forKey: .targetFPS) ?? 60
+    animateWhenIdle = try values.decodeIfPresent(Bool.self, forKey: .animateWhenIdle) ?? true
     shaderParameters = try values.decodeIfPresent([String: [String: Float]].self, forKey: .shaderParameters) ?? [:]
     enabledDisplayIDs = try values.decodeIfPresent(Set<UInt32>.self, forKey: .enabledDisplayIDs) ?? []
     displaySelectionIsExplicit = try values.decodeIfPresent(Bool.self, forKey: .displaySelectionIsExplicit)
@@ -95,6 +97,7 @@ class Config: Codable {
     try values.encodeIfPresent(shaderPath, forKey: .shaderPath)
     try values.encode(active, forKey: .active)
     try values.encode(targetFPS, forKey: .targetFPS)
+    try values.encode(animateWhenIdle, forKey: .animateWhenIdle)
     try values.encode(shaderParameters, forKey: .shaderParameters)
     try values.encode(enabledDisplayIDs, forKey: .enabledDisplayIDs)
     try values.encodeIfPresent(displaySelectionIsExplicit, forKey: .displaySelectionIsExplicit)
@@ -217,18 +220,6 @@ class Config: Codable {
       return !path.isEmpty
     }
     return false
-  }
-  
-  func getShader() -> String? {
-    guard let path = shaderPath, !path.isEmpty else {
-      return nil
-    }
-    do {
-      return try String(contentsOfFile: path, encoding: .utf8)
-    } catch {
-      print("Failed to read shader from file: \(error)")
-      return nil
-    }
   }
   
   func toggleActive() {

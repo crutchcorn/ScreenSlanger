@@ -1,12 +1,14 @@
 #version 450
 
+layout(push_constant) uniform Push { mat4 MVP; } params;
+
 #pragma stage vertex
 layout(location = 0) in vec4 Position;
 layout(location = 1) in vec2 TexCoord;
 layout(location = 0) out vec2 vTexCoord;
 
 void main() {
-    gl_Position = Position;
+    gl_Position = params.MVP * Position;
     vTexCoord = TexCoord;
 }
 

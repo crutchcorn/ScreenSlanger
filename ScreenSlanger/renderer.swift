@@ -11,210 +11,146 @@ class MetalView: MTKView {
   }
 }
 
-/// Shared Metal resources to avoid duplicating expensive objects across multiple renderers
+/// A compiled native pipeline is immutable. RetroArch owns one isolated chain per display.
+struct CompiledEffect: Sendable {
+  enum Backend: Sendable {
+    case slang(any MTLRenderPipelineState)
+    case retroArch([UInt32: RetroArchFilterChain])
+  }
+  let id = UUID()
+  let backend: Backend
+  let parameters: [ShaderParameter]
+  var compositor: (any MTLRenderPipelineState)? = nil
+}
+
+struct ShaderLoadRequest: Sendable {
+  var source: String?
+  var url: URL?
+  var displayIDs: [UInt32] = [0]
+}
+
+/// Shares immutable native pipelines and UI parameters; mutable RetroArch history stays per display.
 @MainActor
-class SharedMetalResources {
+final class SharedMetalResources {
   static let shared = SharedMetalResources()
-  
   let device: MTLDevice
   let commandQueue: MTLCommandQueue
   let samplerState: MTLSamplerState
-  let repeatSamplerState: MTLSamplerState
-  let baseTime: TimeInterval
-  
-  // Cached shader resources
-  private(set) var renderPipeline: MTLRenderPipelineState? = nil
-  private(set) var activeShaderType: ActiveShaderType = .none
-  private(set) var parameterState: ShaderParameterState = ShaderParameterState()
-  private var shaderDirectory: URL? = nil
-  private var shaderPreset: ShaderPreset? = nil
-  private var loadedTextures: [String: MTLTexture] = [:]  // Texture name -> texture
-  private var textureSamplers: [ShaderSampler] = []  // Parsed samplers from shader
-  private var activeEffectSource: String? = nil
-  
-  private init() {
-    guard let device = MTLCreateSystemDefaultDevice() else {
-      fatalError("Unable to access a Metal device on this system.")
+  let baseTime = ProcessInfo.processInfo.systemUptime
+  private(set) var effect: CompiledEffect?
+  private(set) var parameterState = ShaderParameterState()
+  private var loadGeneration: UInt64 = 0
+  private var cancellation: ShaderCompilationCancellation?
+
+  var renderPipeline: MTLRenderPipelineState? {
+    guard case .slang(let pipeline) = effect?.backend else { return nil }
+    return pipeline
+  }
+
+  init(device: MTLDevice? = MTLCreateSystemDefaultDevice()) {
+    guard let device, let queue = device.makeCommandQueue() else {
+      fatalError("Unable to create Metal resources.")
     }
     self.device = device
-    self.baseTime = ProcessInfo.processInfo.systemUptime
-    
-    guard let queue = self.device.makeCommandQueue() else {
-      fatalError("Could not create command queue.")
-    }
     self.commandQueue = queue
-    
-    // Create a sampler state for shaders (clamp for source texture)
-    let samplerDescriptor = MTLSamplerDescriptor()
-    samplerDescriptor.minFilter = .linear
-    samplerDescriptor.magFilter = .linear
-    samplerDescriptor.sAddressMode = .clampToEdge
-    samplerDescriptor.tAddressMode = .clampToEdge
-    self.samplerState = self.device.makeSamplerState(descriptor: samplerDescriptor)!
-    
-    // Create a repeat sampler for tiling background textures
-    let repeatSamplerDescriptor = MTLSamplerDescriptor()
-    repeatSamplerDescriptor.minFilter = .linear
-    repeatSamplerDescriptor.magFilter = .linear
-    repeatSamplerDescriptor.sAddressMode = .repeat
-    repeatSamplerDescriptor.tAddressMode = .repeat
-    self.repeatSamplerState = self.device.makeSamplerState(descriptor: repeatSamplerDescriptor)!
+    let descriptor = MTLSamplerDescriptor()
+    descriptor.minFilter = .linear
+    descriptor.magFilter = .linear
+    descriptor.sAddressMode = .clampToEdge
+    descriptor.tAddressMode = .clampToEdge
+    self.samplerState = device.makeSamplerState(descriptor: descriptor)!
   }
-  
-  func getTexture(named name: String) -> MTLTexture? {
-    return loadedTextures[name]
-  }
-  
-  func getBackgroundTexture() -> MTLTexture? {
-    // For backwards compatibility, return first non-Source texture or BACKGROUND
-    return loadedTextures["BACKGROUND"] ?? loadedTextures.values.first
-  }
-  
-  func getTextureSamplers() -> [ShaderSampler] {
-    return textureSamplers
-  }
-  
-  private var currentShaderPath: String? = nil
 
-  func invalidateEffect() {
-    // A preset can reference edited shaders, includes, or textures even when
-    // the preset text itself has not changed.
-    self.activeEffectSource = nil
+  func clear() {
+    cancellation?.cancel()
+    cancellation = nil
+    loadGeneration &+= 1
+    effect = nil
+    parameterState = ShaderParameterState()
   }
-  
-  func setEffectSource(_ effectSource: String?, shaderPath: String? = nil) throws {
-    if effectSource != nil && effectSource == activeEffectSource
-      && shaderPath == currentShaderPath && renderPipeline != nil {
-      return
+
+  /// Compilation and texture loading never run on the main actor. A cancelled or
+  /// superseded request can finish cleanup, but cannot publish its result.
+  func loadEffect(
+    _ request: ShaderLoadRequest,
+    build: @escaping @Sendable (
+      ShaderLoadRequest, any MTLDevice, any MTLCommandQueue, ShaderCompilationCancellation
+    ) throws -> CompiledEffect = SharedMetalResources.compile
+  ) async throws {
+    clear()
+    let generation = loadGeneration
+    let token = ShaderCompilationCancellation()
+    cancellation = token
+    let device = self.device
+    let queue = self.commandQueue
+    let loaded = try await withTaskCancellationHandler {
+      try await Task.detached(priority: .userInitiated) {
+        try build(request, device, queue, token)
+      }.value
+    } onCancel: {
+      token.cancel()
     }
-    
-    // Cache only successful compilations. A failure must not reuse an old
-    // pipeline on another display or suppress a later retry of the same file.
-    self.activeEffectSource = nil
-    self.currentShaderPath = nil
-    self.renderPipeline = nil
-    self.activeShaderType = .none
-    self.parameterState = ShaderParameterState()
-    self.shaderPreset = nil
-    self.shaderDirectory = nil
-    self.loadedTextures.removeAll()
-    self.textureSamplers.removeAll()
-    
-    guard let effectSource = effectSource else { return }
-    
-    // Check if this is a .slangp preset file
-    if let path = shaderPath, path.hasSuffix(".slangp") {
-      try loadFromPreset(presetPath: path)
-      self.activeEffectSource = effectSource
-      self.currentShaderPath = shaderPath
-      return
-    }
-    
-    // Determine shader directory for includes
-    if let path = shaderPath {
-      self.shaderDirectory = URL(fileURLWithPath: path).deletingLastPathComponent()
+    try Task.checkCancellation()
+    try token.checkCancellation()
+    guard generation == loadGeneration else { throw CancellationError() }
+    effect = loaded
+    parameterState.parameters = loaded.parameters
+    parameterState.reset()
+    cancellation = nil
+  }
+
+  nonisolated static func compile(
+    _ request: ShaderLoadRequest, device: any MTLDevice, queue: any MTLCommandQueue,
+    cancellation: ShaderCompilationCancellation
+  ) throws -> CompiledEffect {
+    try cancellation.checkCancellation()
+    let source: String
+    if let supplied = request.source {
+      source = supplied
+    } else if let url = request.url {
+      source = try String(contentsOf: url, encoding: .utf8)
     } else {
-      self.shaderDirectory = nil
+      throw ShaderRenderError.noSource
     }
-    
-    // Detect shader type and compile accordingly
-    if RetroArchShaderCompiler.isRetroArchShader(effectSource) {
-      // RetroArch-style shader
-      let (pipeline, parameters, samplers) = try MetalRenderer.buildRetroArchPipeline(
-        device: self.device,
-        effectSource: effectSource,
-        shaderDirectory: self.shaderDirectory
-      )
-      self.renderPipeline = pipeline
-      self.activeShaderType = .retroArch
-      self.parameterState = ShaderParameterState()
-      self.parameterState.parameters = parameters
-      self.parameterState.reset()
-      self.textureSamplers = samplers
-      // Note: Standalone .slang files without a .slangp preset won't have textures loaded
-      // Textures are only loaded when defined in a .slangp preset file
-    } else {
-      // Standard Slang shader
-      self.renderPipeline = try MetalRenderer.buildRenderPipeline(
-        device: self.device, effectSource: effectSource)
-      self.activeShaderType = .slang
-      self.parameterState = ShaderParameterState()
-    }
-    self.activeEffectSource = effectSource
-    self.currentShaderPath = shaderPath
-  }
-  
-  /// Load shader from a .slangp preset file
-  private func loadFromPreset(presetPath: String) throws {
-    let presetURL = URL(fileURLWithPath: presetPath)
-    let preset = try ShaderPreset.parse(from: presetURL)
-    self.shaderPreset = preset
-    
-    // Resolve and load the actual shader
-    let shaderURL = preset.resolvePath(preset.shaderPath)
-    self.shaderDirectory = shaderURL.deletingLastPathComponent()
-    
-    let shaderSource = try String(contentsOf: shaderURL, encoding: .utf8)
-    
-    // Compile the shader
-    let (pipeline, parameters, samplers) = try MetalRenderer.buildRetroArchPipeline(
-      device: self.device,
-      effectSource: shaderSource,
-      shaderDirectory: self.shaderDirectory
-    )
-    self.renderPipeline = pipeline
-    self.activeShaderType = .retroArch
-    self.parameterState = ShaderParameterState()
-    self.parameterState.parameters = parameters
-    self.textureSamplers = samplers
-    
-    // Apply parameter values from preset
-    for (name, value) in preset.parameterValues {
-      self.parameterState.setValue(value, for: name)
-    }
-    
-    // For any parameters not in preset, use defaults
-    for param in parameters {
-      if preset.parameterValues[param.name] == nil {
-        self.parameterState.setValue(param.defaultValue, for: param.name)
+    let isPreset = request.url?.pathExtension.lowercased() == "slangp"
+    if isPreset || ShaderFormat.isRetroArch(source) {
+      guard let url = request.url else { throw ShaderRenderError.retroArchNeedsFile }
+      var chains: [UInt32: RetroArchFilterChain] = [:]
+      for displayID in request.displayIDs {
+        try cancellation.checkCancellation()
+        chains[displayID] = try RetroArchFilterChain(shaderURL: url, commandQueue: queue)
       }
+      try cancellation.checkCancellation()
+      return CompiledEffect(backend: .retroArch(chains),
+                            parameters: chains.values.first?.parameters ?? [],
+                            compositor: try makeCompositor(device: device))
     }
-    
-    // Load textures defined in the preset
-    for texture in preset.textures {
-      let textureURL = preset.resolvePath(texture.path)
-      if let loadedTexture = loadTexture(from: textureURL, linear: texture.linear) {
-        loadedTextures[texture.name] = loadedTexture
-      }
-    }
+    let pipeline = try MetalRenderer.buildRenderPipeline(
+      device: device, effectSource: source, sourceURL: request.url, cancellation: cancellation)
+    try cancellation.checkCancellation()
+    return CompiledEffect(backend: .slang(pipeline), parameters: [])
   }
-  
-  /// Load a texture from a file
-  private func loadTexture(from url: URL, linear: Bool = false) -> MTLTexture? {
-    let textureLoader = MTKTextureLoader(device: device)
-    do {
-      let texture = try textureLoader.newTexture(
-        URL: url,
-        options: [
-          .textureUsage: MTLTextureUsage([.shaderRead, .pixelFormatView]).rawValue,
-          .textureStorageMode: MTLStorageMode.private.rawValue
-        ]
-      )
-      // Single-channel images (such as the EINK paper background) represent
-      // grayscale. Expand them at sampling time without rewriting shader code.
-      if texture.pixelFormat == .r8Unorm || texture.pixelFormat == .r16Unorm
-        || texture.pixelFormat == .r16Float || texture.pixelFormat == .r32Float {
-        return texture.makeTextureView(
-          pixelFormat: texture.pixelFormat, textureType: texture.textureType,
-          levels: 0..<texture.mipmapLevelCount,
-          slices: 0..<texture.arrayLength,
-          swizzle: MTLTextureSwizzleChannels(red: .red, green: .red, blue: .red, alpha: .one))
+  nonisolated private static func makeCompositor(device: MTLDevice) throws -> MTLRenderPipelineState {
+    let library = try device.makeLibrary(source: """
+      #include <metal_stdlib>
+      using namespace metal;
+      struct Quad { float4 position [[position]]; float2 uv; };
+      vertex Quad screenVertex(uint id [[vertex_id]]) {
+        float2 p[3] = {float2(-1,-1),float2(3,-1),float2(-1,3)};
+        return {float4(p[id],0,1),float2((p[id].x+1)*0.5,(1-p[id].y)*0.5)};
       }
-      return texture
-    } catch {
-      return nil
-    }
+      fragment float4 screenCopy(Quad v [[stage_in]], texture2d<float> image [[texture(0)]]) {
+        constexpr sampler nearest(coord::normalized,filter::nearest,address::clamp_to_edge);
+        return image.sample(nearest,v.uv);
+      }
+      """, options: nil)
+    let descriptor = MTLRenderPipelineDescriptor()
+    descriptor.vertexFunction = library.makeFunction(name: "screenVertex")
+    descriptor.fragmentFunction = library.makeFunction(name: "screenCopy")
+    descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+    return try device.makeRenderPipelineState(descriptor: descriptor)
   }
+
 }
 
 // Uniforms struct that matches Slang's expected layout
@@ -223,30 +159,6 @@ struct SlangUniforms {
   var mousePosition: vector_float2
   var time: Float
   var _padding: Float = 0  // Alignment padding
-}
-
-// Uniforms struct for RetroArch shaders (matches push_constant layout)
-struct RetroArchPushConstants {
-  // Standard RetroArch push constants - matches typical Push struct
-  var sourceSize: vector_float4      // xy = size, zw = 1/size
-  var originalSize: vector_float4    // xy = size, zw = 1/size
-  var outputSize: vector_float4      // xy = size, zw = 1/size
-  var frameCount: UInt32
-  var _padding1: UInt32 = 0
-  var _padding2: UInt32 = 0
-  var _padding3: UInt32 = 0
-}
-
-// Standard UBO for RetroArch shaders
-struct RetroArchUBO {
-  var mvp: matrix_float4x4
-}
-
-/// Enum to track which type of shader is currently active
-enum ActiveShaderType {
-  case none
-  case slang
-  case retroArch
 }
 
 /// Holds the current state of shader parameters
@@ -281,15 +193,25 @@ class ShaderParameterState {
 class MetalRenderer {
   private let shared = SharedMetalResources.shared
   private var textureCache: CVMetalTextureCache!
-  private let screen: NSScreen  // The screen this renderer is associated with
+  private let screen: NSScreen
+  private let metrics: Metrics
+  private let core: ShaderRenderCore
+  private let frameSlot = DispatchSemaphore(value: 1)
+  private var frameCount: UInt32 = 0
+  private var effectID: UUID?
+  private var previousFrameTime: TimeInterval?
+  var onError: @MainActor (String) -> Void = { _ in }
   
   // Expose parameter state from shared resources
   var parameterState: ShaderParameterState {
     return shared.parameterState
   }
 
-  init(metalLayer: CAMetalLayer, screen: NSScreen) {
+  init(metalLayer: CAMetalLayer, screen: NSScreen, metrics: Metrics) {
     self.screen = screen
+    self.metrics = metrics
+    let displayID = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber).uint32Value
+    self.core = ShaderRenderCore(displayID: displayID)
 
     metalLayer.device = shared.device
     metalLayer.pixelFormat = .bgra8Unorm
@@ -307,69 +229,21 @@ class MetalRenderer {
     }
   }
   
-  // MARK: - RetroArch Shader Pipeline Builder
-  
-  /// Build a render pipeline from a RetroArch shader
-  static func buildRetroArchPipeline(
-    device: MTLDevice,
-    effectSource: String,
-    shaderDirectory: URL?
-  ) throws -> (MTLRenderPipelineState, [ShaderParameter], [ShaderSampler]) {
-    let compiled = try RetroArchShaderCompiler.compileToMetal(
-      source: effectSource,
-      shaderDirectory: shaderDirectory
-    )
-    
-    let library: MTLLibrary
-    do {
-      library = try device.makeLibrary(source: compiled.metalSource, options: nil)
-    } catch {
-      throw NSError(
-        domain: "MetalRenderer", code: 4,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Metal compilation failed: \(error.localizedDescription)"
-        ])
-    }
-    
-    // RetroArch shaders use main0 for both vertex and fragment by default
-    // but spirv-cross may generate different names
-    let vertexFunction = library.makeFunction(name: compiled.vertexFunctionName)
-      ?? library.makeFunction(name: "vertexMain")
-      ?? library.makeFunction(name: "vertex_main")
-    let fragmentFunction = library.makeFunction(name: compiled.fragmentFunctionName)
-      ?? library.makeFunction(name: "fragmentMain") 
-      ?? library.makeFunction(name: "fragment_main")
-    
-    guard vertexFunction != nil && fragmentFunction != nil else {
-      // List available functions for debugging
-      let functionNames = library.functionNames.joined(separator: ", ")
-      throw NSError(
-        domain: "MetalRenderer", code: 1,
-        userInfo: [
-          NSLocalizedDescriptionKey: "Could not find shader entry points. Available functions: \(functionNames)"
-        ])
-    }
-    
-    let pipelineDescriptor = MTLRenderPipelineDescriptor()
-    pipelineDescriptor.vertexFunction = vertexFunction
-    pipelineDescriptor.fragmentFunction = fragmentFunction
-    pipelineDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
-    
-    let pipeline = try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
-    return (pipeline, compiled.parameters, compiled.samplers)
-  }
-
   // MARK: - Standard Slang Pipeline Builder
-  static func buildRenderPipeline(device: MTLDevice, effectSource: String) throws
-    -> MTLRenderPipelineState
-  {
+  nonisolated static func buildRenderPipeline(
+    device: MTLDevice, effectSource: String, sourceURL: URL? = nil,
+    cancellation: ShaderCompilationCancellation? = nil
+  ) throws -> MTLRenderPipelineState {
     // Wrap the user's effect code in the Slang framework
-    let wrappedSource = SlangCompiler.wrapEffectSource(effectSource)
+    let wrappedSource = SlangCompiler.wrapEffectSource(effectSource, sourceURL: sourceURL)
     
     // Compile Slang to Metal shader source
     let metalFragmentSource: String
     do {
-      metalFragmentSource = try SlangCompiler.compileToMetal(slangSource: wrappedSource)
+      metalFragmentSource = try SlangCompiler.compileToMetal(
+        slangSource: wrappedSource, sourceURL: sourceURL, cancellation: cancellation)
+    } catch is CancellationError {
+      throw CancellationError()
     } catch {
       throw NSError(
         domain: "MetalRenderer", code: 3,
@@ -378,11 +252,7 @@ class MetalRenderer {
         ])
     }
     
-    // Slang generates a complete Metal file with its own includes.
-    // We need to add our vertex shader to it, but avoid duplicate includes.
-    // Strip the Slang includes and add our vertex shader after.
-    
-    // The Slang output already has the fragment shader, we just need to add vertex shader
+    // Append the fullscreen vertex stage to the compiler's complete Metal source.
     let librarySource = """
       \(metalFragmentSource)
       
@@ -441,96 +311,101 @@ class MetalRenderer {
     return try device.makeRenderPipelineState(descriptor: pipelineDescriptor)
   }
 
-  func setEffectSource(_ effectSource: String?, shaderPath: String? = nil) throws {
-    // Delegate to shared resources - shader compilation happens only once
-    try shared.setEffectSource(effectSource, shaderPath: shaderPath)
-  }
-
-  func renderContentBuffer(window: NSWindow, contentBuffer: CVPixelBuffer) {
-    guard let drawable = (window.contentView as? MetalView)?.metalLayer.nextDrawable() else {
-      return
+  /// Nonblocking submission: keep one frame per display in flight, with its
+  /// capture surface retained until the GPU has finished reading it.
+  @discardableResult
+  func renderContentBuffer(
+    window: NSWindow, contentBuffer: CVPixelBuffer, captureTime: TimeInterval,
+    framesPerSecond: Int, onCompletion: @escaping @MainActor @Sendable () -> Void
+  ) -> Bool {
+    guard shared.effect != nil, frameSlot.wait(timeout: .now()) == .success else {
+      metrics.recordSkippedRender()
+      return false
+    }
+    var submitted = false
+    defer {
+      if !submitted {
+        frameSlot.signal()
+        metrics.recordSkippedRender()
+      }
     }
 
-    let width = CVPixelBufferGetWidth(contentBuffer)
-    let height = CVPixelBufferGetHeight(contentBuffer)
-
-    var tempTextureRef: CVMetalTexture?
+    var textureRef: CVMetalTexture?
     let status = CVMetalTextureCacheCreateTextureFromImage(
-      kCFAllocatorDefault,
-      self.textureCache,
-      contentBuffer,
-      nil,
-      .bgra8Unorm,
-      width,
-      height,
-      0,
-      &tempTextureRef)
+      kCFAllocatorDefault, textureCache, contentBuffer, nil, .bgra8Unorm,
+      CVPixelBufferGetWidth(contentBuffer), CVPixelBufferGetHeight(contentBuffer), 0, &textureRef)
+    guard status == kCVReturnSuccess, let textureRef,
+          let texture = CVMetalTextureGetTexture(textureRef),
+          let commandBuffer = shared.commandQueue.makeCommandBuffer() else { return false }
 
-    guard status == kCVReturnSuccess, let textureRef = tempTextureRef,
-      let texture = CVMetalTextureGetTexture(textureRef)
-    else {
-      return
+    // Acquire scarce drawable storage only after the capture and frame slot are ready.
+    guard let drawable = (window.contentView as? MetalView)?.metalLayer.nextDrawable() else {
+      return false
     }
-
-    guard let commandBuffer = shared.commandQueue.makeCommandBuffer() else { return }
-
-    // Set scissor rect to exclude the menu bar.
-    // The scissor rect is relative to the drawable, not global screen coordinates.
-    let scaleFactor = self.screen.backingScaleFactor
-    let screenFrame = self.screen.frame
-    let visibleFrame = self.screen.visibleFrame
-    
-    // Calculate the visible area relative to the screen's own frame (not global coordinates)
-    // The visible frame excludes the menu bar and dock
-    let relativeX = visibleFrame.origin.x - screenFrame.origin.x
-    let relativeY = visibleFrame.origin.y - screenFrame.origin.y
-    
-    // Convert to Metal coordinates (origin at top-left, scaled by backing scale factor)
-    // The scissor rect Y is from the top, but visibleFrame Y is from the bottom
-    let scissorX = Int(relativeX * scaleFactor)
-    let scissorY = Int((screenFrame.height - relativeY - visibleFrame.height) * scaleFactor)
-    let scissorWidth = Int(visibleFrame.width * scaleFactor)
-    let scissorHeight = Int(visibleFrame.height * scaleFactor)
-    
-    // Clamp to drawable bounds to avoid Metal validation errors
-    let drawableWidth = drawable.texture.width
-    let drawableHeight = drawable.texture.height
-    
-    let clampedX = max(0, min(scissorX, drawableWidth))
-    let clampedY = max(0, min(scissorY, drawableHeight))
-    let clampedWidth = max(0, min(scissorWidth, drawableWidth - clampedX))
-    let clampedHeight = max(0, min(scissorHeight, drawableHeight - clampedY))
-    
-    let scissorRect = MTLScissorRect(
-      x: clampedX,
-      y: clampedY,
-      width: clampedWidth,
-      height: clampedHeight
-    )
+    if effectID != shared.effect?.id {
+      effectID = shared.effect?.id
+      frameCount = 0
+      previousFrameTime = nil
+    }
+    let now = ProcessInfo.processInfo.systemUptime
+    let elapsed = previousFrameTime.map { now - $0 } ?? (1 / Double(max(framesPerSecond, 1)))
+    let scale = screen.backingScaleFactor
+    let frame = screen.frame
+    let visible = screen.visibleFrame
+    let width = drawable.texture.width
+    let height = drawable.texture.height
+    let x = max(0, min(Int((visible.minX - frame.minX) * scale), width))
+    let y = max(0, min(Int((frame.maxY - visible.maxY) * scale), height))
+    let scissor = MTLScissorRect(
+      x: x, y: y, width: max(0, min(Int(visible.width * scale), width - x)),
+      height: max(0, min(Int(visible.height * scale), height - y)))
     let context = ShaderFrameContext(
-      outputSize: SIMD2(Float(drawableWidth), Float(drawableHeight)),
+      outputSize: SIMD2(Float(width), Float(height)),
       mousePosition: SIMD2(
-        Float((NSEvent.mouseLocation.x - screenFrame.minX) * scaleFactor),
-        Float((NSEvent.mouseLocation.y - screenFrame.minY) * scaleFactor)),
-      time: Float(ProcessInfo.processInfo.systemUptime - shared.baseTime))
+        Float((NSEvent.mouseLocation.x - frame.minX) * scale),
+        Float((NSEvent.mouseLocation.y - frame.minY) * scale)),
+      time: Float(now - shared.baseTime), frameCount: frameCount,
+      framesPerSecond: Float(framesPerSecond),
+      frameTimeMilliseconds: UInt32(clamping: Int(max(0, min(elapsed * 1000, Double(UInt32.max))))))
     do {
-      try ShaderRenderCore(resources: shared).encode(
-        commandBuffer: commandBuffer, source: texture, destination: drawable.texture,
-        context: context, scissor: scissorRect)
+      try core.encode(commandBuffer: commandBuffer, source: texture,
+                      destination: drawable.texture, context: context, scissor: scissor)
+    } catch RetroArchRuntimeError.frameInFlight {
+      return false
     } catch {
-      return
+      onError("Shader rendering failed: \(error.localizedDescription)")
+      return false
     }
 
-    // Core Video may recycle the capture surface before the GPU has sampled it.
-    // Retain its texture wrapper and pixel buffer until this command finishes.
     let retainedSurface = RetainedCaptureSurface(texture: textureRef, buffer: contentBuffer)
-    commandBuffer.addCompletedHandler { _ in
+    let metrics = self.metrics
+    let frameSlot = self.frameSlot
+    let submittedEffectID = effectID
+    commandBuffer.addCompletedHandler { [weak self] buffer in
       withExtendedLifetime(retainedSurface) {}
+      let duration = buffer.gpuEndTime > buffer.gpuStartTime
+        ? buffer.gpuEndTime - buffer.gpuStartTime : nil
+      metrics.recordCompleted(captureTime: captureTime, gpuDuration: duration,
+                              succeeded: buffer.status == .completed)
+      frameSlot.signal()
+      let failure = buffer.status == .error
+        ? (buffer.error?.localizedDescription ?? "Metal could not finish rendering the shader.") : nil
+      Task { @MainActor [weak self] in
+        if let self, let failure, self.shared.effect?.id == submittedEffectID {
+          self.onError(failure)
+        }
+        onCompletion()
+      }
     }
+    drawable.addPresentedHandler { _ in metrics.recordPresented() }
     commandBuffer.present(drawable)
+    metrics.recordSubmitted()
+    submitted = true
+    frameCount &+= 1
+    previousFrameTime = now
     commandBuffer.commit()
+    return true
   }
-  
 }
 
 /// Inputs shared by onscreen drawing and offscreen regression tests, in pixels.
@@ -539,86 +414,101 @@ struct ShaderFrameContext {
   var mousePosition: SIMD2<Float> = .zero
   var time: Float = 0
   var frameCount: UInt32 = 0
+  var framesPerSecond: Float = 60
+  var frameTimeMilliseconds: UInt32 = 17
 }
 
-enum ShaderRenderError: Error {
-  case noPipeline
-  case encoderUnavailable
+enum ShaderRenderError: Error, LocalizedError {
+  case noPipeline, encoderUnavailable, noSource, retroArchNeedsFile, missingDisplayChain
+
+  var errorDescription: String? {
+    switch self {
+    case .noPipeline: return "No shader is loaded."
+    case .encoderUnavailable: return "Metal could not create a render encoder."
+    case .noSource: return "Select a shader file."
+    case .retroArchNeedsFile: return "RetroArch shaders require a source file for includes and preset resources."
+    case .missingDisplayChain: return "The shader has not been prepared for this display."
+    }
+  }
 }
 
-/// The production texture binding and draw path. It does not depend on windows or capture.
+/// The production texture binding and draw path, used by both the app and pixel tests.
 @MainActor
 final class ShaderRenderCore {
   let resources: SharedMetalResources
+  let displayID: UInt32
+  private var intermediate: MTLTexture?
 
-  init(resources: SharedMetalResources = .shared) {
+  init(resources: SharedMetalResources = .shared, displayID: UInt32 = 0) {
     self.resources = resources
+    self.displayID = displayID
   }
 
   func encode(
     commandBuffer: MTLCommandBuffer, source: MTLTexture, destination: MTLTexture,
     context: ShaderFrameContext, scissor: MTLScissorRect? = nil
   ) throws {
-    guard let pipeline = resources.renderPipeline else { throw ShaderRenderError.noPipeline }
-    let pass = MTLRenderPassDescriptor()
-    pass.colorAttachments[0].texture = destination
-    pass.colorAttachments[0].loadAction = .clear
-    pass.colorAttachments[0].storeAction = .store
-    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
-      throw ShaderRenderError.encoderUnavailable
-    }
-    defer { encoder.endEncoding() }
-    encoder.setRenderPipelineState(pipeline)
-    if let scissor { encoder.setScissorRect(scissor) }
-
-    switch resources.activeShaderType {
-    case .retroArch:
-      encodeRetroArchUniforms(encoder: encoder, source: source, context: context)
-      let samplers = resources.getTextureSamplers()
-      if samplers.isEmpty {
-        encoder.setFragmentTexture(source, index: 0)
-        encoder.setFragmentSamplerState(resources.samplerState, index: 0)
+    guard let effect = resources.effect else { throw ShaderRenderError.noPipeline }
+    switch effect.backend {
+    case .retroArch(let chains):
+      guard let chain = chains[displayID] else { throw ShaderRenderError.missingDisplayChain }
+      let output: MTLTexture
+      if scissor != nil {
+        if intermediate?.width != destination.width || intermediate?.height != destination.height {
+          let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: destination.pixelFormat, width: destination.width,
+            height: destination.height, mipmapped: false)
+          descriptor.storageMode = .private
+          descriptor.usage = [.shaderRead, .renderTarget]
+          intermediate = resources.device.makeTexture(descriptor: descriptor)
+        }
+        guard let intermediate else { throw ShaderRenderError.encoderUnavailable }
+        output = intermediate
+      } else {
+        output = destination
       }
-      for sampler in samplers {
-        let texture = sampler.name == "Source" ? source
-          : resources.getTexture(named: sampler.name) ?? source
-        encoder.setFragmentTexture(texture, index: sampler.binding)
-        encoder.setFragmentSamplerState(
-          sampler.name == "Source" ? resources.samplerState : resources.repeatSamplerState,
-          index: sampler.binding)
+      try chain.encode(commandBuffer: commandBuffer, input: source, output: output,
+                       frameCount: UInt(context.frameCount), framesPerSecond: context.framesPerSecond,
+                       frameTimeMilliseconds: context.frameTimeMilliseconds,
+                       parameterValues: resources.parameterState.values)
+      commandBuffer.addCompletedHandler { _ in withExtendedLifetime(chain) {} }
+      if let scissor, let compositor = effect.compositor {
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = destination
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].storeAction = .store
+        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+          chain.discardUnsubmittedFrame(commandBuffer: commandBuffer)
+          throw ShaderRenderError.encoderUnavailable
+        }
+        encoder.setRenderPipelineState(compositor)
+        encoder.setScissorRect(scissor)
+        encoder.setFragmentTexture(output, index: 0)
+        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        encoder.endEncoding()
       }
-    case .slang:
+    case .slang(let pipeline):
+      let pass = MTLRenderPassDescriptor()
+      pass.colorAttachments[0].texture = destination
+      pass.colorAttachments[0].loadAction = .clear
+      pass.colorAttachments[0].storeAction = .store
+      pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+      guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+        throw ShaderRenderError.encoderUnavailable
+      }
+      encoder.setRenderPipelineState(pipeline)
+      if let scissor { encoder.setScissorRect(scissor) }
       encoder.setFragmentTexture(source, index: 0)
       encoder.setFragmentSamplerState(resources.samplerState, index: 0)
       var uniforms = SlangUniforms(
         screenSize: context.outputSize, mousePosition: context.mousePosition, time: context.time)
       encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
-    case .none:
-      throw ShaderRenderError.noPipeline
+      encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
+      encoder.endEncoding()
     }
-    encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
   }
 
-  private func encodeRetroArchUniforms(
-    encoder: MTLRenderCommandEncoder, source: MTLTexture, context: ShaderFrameContext
-  ) {
-    var pushBuffer = resources.parameterState.parameters.map {
-      resources.parameterState.getValue(for: $0.name)
-    }
-    while pushBuffer.count % 4 != 0 { pushBuffer.append(0) }
-    let width = Float(source.width)
-    let height = Float(source.height)
-    let output = context.outputSize
-    pushBuffer.append(contentsOf: [
-      output.x, output.y, 1 / output.x, 1 / output.y,
-      width, height, 1 / width, 1 / height,
-      width, height, 1 / width, 1 / height
-    ])
-    pushBuffer.withUnsafeBytes { bytes in
-      encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: 0)
-    }
-  }
 }
 
 /// A lifetime token for immutable capture surfaces read by the GPU. The completion

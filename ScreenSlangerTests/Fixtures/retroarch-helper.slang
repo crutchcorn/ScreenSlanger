@@ -2,6 +2,7 @@
 
 #pragma parameter GAIN "Gain" 0.5 0.0 1.0 0.1
 layout(push_constant) uniform Push {
+    mat4 MVP;
     float GAIN;
     vec4 OutputSize;
     vec4 OriginalSize;
@@ -14,7 +15,7 @@ layout(location = 1) in vec2 TexCoord;
 layout(location = 0) out vec2 vTexCoord;
 
 void main() {
-    gl_Position = vec4(Position.xy * params.OutputSize.xy * params.OutputSize.zw, Position.zw);
+    gl_Position = params.MVP * Position;
     vTexCoord = TexCoord;
 }
 

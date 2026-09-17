@@ -12,6 +12,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   private var configWindowController: ConfigWindowController?
   private var configTimer: Timer?
   private var metricsTimer: Timer?
+  private var shaderLoadTask: Task<Void, Never>?
+  private var shaderLoadGeneration: UInt64 = 0
+  private var requestedShader: ShaderSelection?
+  private var shaderReady = false
+
+  private struct ShaderSelection: Equatable {
+    let path: String?
+    let displayIDs: [UInt32]
+    let active: Bool
+  }
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     // ScreenCaptureKit requests permission when an effect is activated. Keep
@@ -54,17 +64,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     configTimer?.invalidate()
     metricsTimer?.invalidate()
     saveConfigIfNeeded()
+    shaderLoadTask?.cancel()
+    SharedMetalResources.shared.clear()
     for controller in overlayControllers.values { controller.cleanup() }
     NotificationCenter.default.removeObserver(self)
     NSWorkspace.shared.notificationCenter.removeObserver(self)
   }
 
   @objc private func displaysChanged(_ notification: Notification) {
-    if notification.name == NSWorkspace.didWakeNotification {
+    let waking = notification.name == NSWorkspace.didWakeNotification
+    if waking {
       for controller in overlayControllers.values { controller.cleanup() }
       overlayControllers.removeAll()
     }
-    refreshConfig()
+    refreshConfig(forceReload: waking)
   }
 
   @objc private func updateMetrics() {
@@ -78,7 +91,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
   }
   
   /// Update overlay controllers - only add/remove what changed
-  private func updateOverlayControllers() {
+  @discardableResult
+  private func updateOverlayControllers() -> Bool {
+    var controllersChanged = false
     // Get current set of enabled display IDs
     var enabledDisplayIDs = Set<CGDirectDisplayID>()
     var screensByID: [CGDirectDisplayID: NSScreen] = [:]
@@ -99,6 +114,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Explicitly cleanup before removing
         overlayControllers[displayID]?.cleanup()
         overlayControllers.removeValue(forKey: displayID)
+        controllersChanged = true
       }
     }
     
@@ -117,8 +133,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
           self.refreshConfig()
         }
         overlayControllers[displayID] = controller
+        controllersChanged = true
       }
     }
+    return controllersChanged
   }
   
   /// Get the CGDirectDisplayID for a screen
@@ -133,22 +151,63 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     return true
   }
 
-  private func refreshConfig() {
+  private func refreshConfig(forceReload: Bool = false) {
     self.statusItem.button?.image = self.getMenuBarIcon()
+    let controllersChanged = updateOverlayControllers()
+    self.configChanged = true
 
-    // Update overlay controllers - only adds/removes what changed
-    updateOverlayControllers()
-    
+    let selection = ShaderSelection(
+      path: config.shaderPath, displayIDs: overlayControllers.keys.sorted(), active: config.active)
+    // Recreated renderers restart FrameCount, so their feedback/history chains
+    // must restart too, even if display IDs and the shader path did not change.
+    if selection != requestedShader || forceReload || controllersChanged {
+      requestedShader = selection
+      shaderLoadGeneration &+= 1
+      let generation = shaderLoadGeneration
+      shaderLoadTask?.cancel()
+      shaderLoadTask = nil
+      shaderReady = false
+      SharedMetalResources.shared.clear()
+      refreshOverlayState()
+
+      guard selection.active, let path = selection.path, !path.isEmpty,
+        !selection.displayIDs.isEmpty else { return }
+      errorMessage.clear()
+      let request = ShaderLoadRequest(
+        source: nil, url: URL(fileURLWithPath: path), displayIDs: selection.displayIDs)
+      shaderLoadTask = Task { [weak self] in
+        guard let self else { return }
+        do {
+          try await SharedMetalResources.shared.loadEffect(request)
+          guard !Task.isCancelled, self.shaderLoadGeneration == generation else { return }
+          self.shaderLoadTask = nil
+          self.shaderReady = true
+          self.config.applyStoredParameters(to: SharedMetalResources.shared.parameterState)
+          self.errorMessage.clear()
+          self.refreshOverlayState()
+        } catch is CancellationError {
+          // A newer selection or deactivation owns the current UI state.
+        } catch {
+          guard !Task.isCancelled, self.shaderLoadGeneration == generation else { return }
+          self.shaderLoadTask = nil
+          self.shaderReady = false
+          self.config.active = false
+          self.errorMessage.set(error.localizedDescription)
+          self.refreshConfig()
+        }
+      }
+    } else {
+      // Frame-rate and idle-animation changes only reconfigure drawing/capture.
+      refreshOverlayState()
+    }
+  }
+
+  private func refreshOverlayState() {
     for controller in overlayControllers.values {
-      controller.refreshConfig()
+      controller.refreshConfig(ready: shaderReady)
     }
     self.configWindowController?.refreshActiveEffects()
-    
-    // Update parameter UI with new shader's parameters
     self.updateParameterUI()
-
-    // Indicate that the config should be saved to disk.
-    self.configChanged = true
   }
 
   private func setupMenuBar() {
@@ -233,8 +292,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       self?.refreshConfig()
     }
     self.configWindowController!.onReloadShader = { [weak self] in
-      SharedMetalResources.shared.invalidateEffect()
-      self?.refreshConfig()
+      self?.refreshConfig(forceReload: true)
     }
     self.configWindowController!.errorMessage = self.errorMessage
     self.configWindowController!.parameterState = self.getFirstParameterState()

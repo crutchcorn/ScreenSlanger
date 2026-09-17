@@ -1,0 +1,4 @@
+module CLibrashader [system] {
+    header "shim.h"
+    export *
+}

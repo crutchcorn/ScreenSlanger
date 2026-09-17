@@ -2,7 +2,6 @@ import ScreenCaptureKit
 
 @MainActor
 class ScreenCapture {
-  var config: Config! = nil
   var excludedWindowIDs: [CGWindowID] = []
   var onFrameReceived: @Sendable (CVPixelBuffer) -> Void = { _ in }
   var onError: @MainActor (Error) -> Void = { _ in }
@@ -23,11 +22,11 @@ class ScreenCapture {
     return CGDirectDisplayID(screenNumber.uint32Value)
   }
 
-  func startCapture() {
-    // Snapshot AppKit/configuration values on the caller's UI thread, before the task starts.
+  private func startCapture(framesPerSecond: Int) {
+    // Snapshot AppKit values on the UI thread before the task starts.
     let targetDisplayID = getDisplayID()
     let scaleFactor = self.screen.backingScaleFactor
-    let targetFPS = max(1, min(self.config.targetFPS, Int(Int32.max)))
+    let targetFPS = max(1, min(framesPerSecond, Int(Int32.max)))
     let excludedWindowIDs = self.excludedWindowIDs
     let sessionID = UUID()
     let output = StreamOutput(onFrameReceived: self.onFrameReceived) { [weak self] error in
@@ -36,7 +35,7 @@ class ScreenCapture {
       }
     }
     let newSession = CaptureSession(
-      id: sessionID, output: output,
+      id: sessionID, output: output, framesPerSecond: targetFPS,
       onError: self.onError, onCaptureStopped: self.onCaptureStopped)
 
     guard session == nil else { return }
@@ -110,12 +109,17 @@ class ScreenCapture {
     }
   }
 
-  func setCapturing(_ capturing: Bool) {
-    if capturing {
-      startCapture()
-    } else {
+  func setCapturing(_ capturing: Bool, framesPerSecond: Int) {
+    guard capturing else {
       stopCapture()
+      return
     }
+    let framesPerSecond = max(1, min(framesPerSecond, Int(Int32.max)))
+    guard session?.framesPerSecond != framesPerSecond else { return }
+    // Capture configuration is immutable for a session. Changing FPS replaces
+    // that session without reloading the shader or its per-display filter chain.
+    stopCapture()
+    startCapture(framesPerSecond: framesPerSecond)
   }
 
   private func isCurrentSession(_ candidate: CaptureSession) -> Bool {
@@ -171,6 +175,7 @@ class ScreenCapture {
 private final class CaptureSession {
   let id: UUID
   let output: StreamOutput
+  let framesPerSecond: Int
   let onError: @MainActor (Error) -> Void
   let onCaptureStopped: @MainActor () -> Void
   // Session transitions are confined to the main actor, including after awaits.
@@ -178,12 +183,13 @@ private final class CaptureSession {
   var startTask: Task<Void, Never>?
 
   init(
-    id: UUID, output: StreamOutput,
+    id: UUID, output: StreamOutput, framesPerSecond: Int,
     onError: @escaping @MainActor (Error) -> Void,
     onCaptureStopped: @escaping @MainActor () -> Void
   ) {
     self.id = id
     self.output = output
+    self.framesPerSecond = framesPerSecond
     self.onError = onError
     self.onCaptureStopped = onCaptureStopped
   }

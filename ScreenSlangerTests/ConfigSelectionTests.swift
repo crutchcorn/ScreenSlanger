@@ -10,6 +10,7 @@ struct ConfigSelectionTests {
 
     #expect(config.isDisplayEnabled(1))
     #expect(config.isDisplayEnabled(2))
+    #expect(config.animateWhenIdle)
   }
 
   @Test("Legacy default selections preserve all displays and unrelated preferences")
@@ -96,6 +97,7 @@ struct ConfigSelectionTests {
     #expect(config.shaderPath == "/tmp/legacy.slang")
     #expect(config.active)
     #expect(config.targetFPS == 60)
+    #expect(config.animateWhenIdle)
     #expect(config.shaderParameters.isEmpty)
     #expect(config.isDisplayEnabled(1))
     #expect(config.displaySelectionIsExplicit == nil)
@@ -122,6 +124,7 @@ struct ConfigSelectionTests {
     config.shaderPath = "/tmp/example.slangp"
     config.active = true
     config.targetFPS = 120
+    config.animateWhenIdle = false
     config.setParameterValue(name: "GAIN", value: 0.75)
     config.toggleDisplay(1, availableDisplayIDs: [1])
 
@@ -130,12 +133,16 @@ struct ConfigSelectionTests {
     #expect(loaded.shaderPath == config.shaderPath)
     #expect(loaded.active)
     #expect(loaded.targetFPS == 120)
+    #expect(!loaded.animateWhenIdle)
     #expect(loaded.getParameterValue(name: "GAIN") == 0.75)
     #expect(!loaded.isDisplayEnabled(1))
 
     loaded.active = false
+    loaded.animateWhenIdle = true
     #expect(loaded.save())
-    #expect(!Config.load(fileURL: fileURL).active)
+    let reloaded = Config.load(fileURL: fileURL)
+    #expect(!reloaded.active)
+    #expect(reloaded.animateWhenIdle)
   }
 
   @Test("A missing file loads defaults without creating directories")
@@ -144,6 +151,7 @@ struct ConfigSelectionTests {
     let loaded = Config.load(fileURL: directory.appendingPathComponent("config.json"))
 
     #expect(loaded.targetFPS == 60)
+    #expect(loaded.animateWhenIdle)
     #expect(!loaded.active)
     #expect(!FileManager.default.fileExists(atPath: directory.path))
   }

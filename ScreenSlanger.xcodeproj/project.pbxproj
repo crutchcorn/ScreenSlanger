@@ -24,6 +24,9 @@
 		97FE7FD5305CA7F9001601EC /* slang_compiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4492EF6CF50002B55FD /* slang_compiler.swift */; };
 		97FE7FD6305CA7F9001601EC /* slang_compiler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4492EF6CF50002B55FD /* slang_compiler.swift */; };
 		97FE7FDF305CA843001601EC /* waves.slang in Resources */ = {isa = PBXBuildFile; fileRef = 97FE7FDE305CA843001601EC /* waves.slang */; };
+		97FE7FE4305CACF3001601EC /* librashader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97FE7FE3305CACF3001601EC /* librashader.swift */; };
+		97FE7FE7305CADB5001601EC /* librashader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97FE7FE3305CACF3001601EC /* librashader.swift */; };
+		97FE7FE8305CADC4001601EC /* metrics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 97ACF4432EF6CF50002B55FD /* metrics.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -66,6 +69,7 @@
 		97FE7FC7305CA6CD001601EC /* ShaderCompilerProbe */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = ShaderCompilerProbe; sourceTree = BUILT_PRODUCTS_DIR; };
 		97FE7FDE305CA843001601EC /* waves.slang */ = {isa = PBXFileReference; lastKnownFileType = text; name = waves.slang; path = assets/waves.slang; sourceTree = SOURCE_ROOT; };
 		97FE7FE0305CA879001601EC /* ScreenSlanger.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = ScreenSlanger.xctestplan; sourceTree = "<group>"; };
+		97FE7FE3305CACF3001601EC /* librashader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = librashader.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -137,6 +141,7 @@
 				97ACF4472EF6CF50002B55FD /* screen_capture.swift */,
 				97ACF4492EF6CF50002B55FD /* slang_compiler.swift */,
 				97FE7FDE305CA843001601EC /* waves.slang */,
+				97FE7FE3305CACF3001601EC /* librashader.swift */,
 			);
 			path = ScreenSlanger;
 			sourceTree = "<group>";
@@ -151,6 +156,7 @@
 				4159FE582D497D4400B79670 /* Sources */,
 				4159FE592D497D4400B79670 /* Frameworks */,
 				4159FE5A2D497D4400B79670 /* Resources */,
+				97FE7FE9305CAF21001601EC /* Bundle Shader Runtimes */,
 			);
 			buildRules = (
 			);
@@ -270,6 +276,30 @@
 		};
 /* End PBXResourcesBuildPhase section */
 
+/* Begin PBXShellScriptBuildPhase section */
+		97FE7FE9305CAF21001601EC /* Bundle Shader Runtimes */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"$(SRCROOT)/scripts/shader-runtimes-inputs.xcfilelist",
+			);
+			inputPaths = (
+			);
+			name = "Bundle Shader Runtimes";
+			outputFileListPaths = (
+				"$(SRCROOT)/scripts/shader-runtimes-outputs.xcfilelist",
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "/bin/bash \"$SRCROOT/scripts/bundle-shader-runtimes.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		4159FE582D497D4400B79670 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -283,6 +313,7 @@
 				97ACF4522EF6CF50002B55FD /* screen_capture.swift in Sources */,
 				97ACF4532EF6CF50002B55FD /* config.swift in Sources */,
 				97ACF4542EF6CF50002B55FD /* config_view.swift in Sources */,
+				97FE7FE4305CACF3001601EC /* librashader.swift in Sources */,
 				97ACF4552EF6CF50002B55FD /* overlay.swift in Sources */,
 				97ACF4562EF6CF50002B55FD /* retroarch_shader.swift in Sources */,
 			);
@@ -293,9 +324,11 @@
 			buildActionMask = 2147483647;
 			files = (
 				97FE7FD3305CA7DB001601EC /* renderer.swift in Sources */,
+				97FE7FE8305CADC4001601EC /* metrics.swift in Sources */,
 				97FE7FD0305CA7BE001601EC /* config.swift in Sources */,
 				97FE7FD4305CA7E9001601EC /* retroarch_shader.swift in Sources */,
 				97FE7FD5305CA7F9001601EC /* slang_compiler.swift in Sources */,
+				97FE7FE7305CADB5001601EC /* librashader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -459,12 +492,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.crutchcorn.ScreenSlanger;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Vendor";
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
@@ -492,12 +526,13 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 0.0.1;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.crutchcorn.ScreenSlanger;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Vendor";
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
@@ -509,7 +544,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.crutchcorn.ScreenSlangerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -518,6 +553,7 @@
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Vendor";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = NO;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -532,7 +568,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = io.github.crutchcorn.ScreenSlangerTests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -541,6 +577,7 @@
 				SUPPORTED_PLATFORMS = macosx;
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;
 				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/Vendor";
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = NO;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2,7";
@@ -552,7 +589,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;
@@ -565,7 +602,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MACOSX_DEPLOYMENT_TARGET = 27.0;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;

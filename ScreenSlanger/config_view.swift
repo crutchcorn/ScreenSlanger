@@ -1,6 +1,10 @@
 import AppKit
 
-class ConfigViewController: NSViewController {
+private final class SettingsDocumentView: NSView {
+  override var isFlipped: Bool { true }
+}
+
+class ConfigViewController: NSViewController, NSTextFieldDelegate {
   var config: Config! = nil
   var onConfigUpdate: @MainActor () -> Void = {}
   var onReloadShader: @MainActor () -> Void = {}
@@ -14,6 +18,8 @@ class ConfigViewController: NSViewController {
   private var activateButton: NSButton! = nil
   private var reloadButton: NSButton! = nil
   private var errorMessageField: NSTextField! = nil
+  private var frameRateField: NSTextField! = nil
+  private var animateWhenIdleCheckbox: NSButton! = nil
   
   // Parameter controls
   private var parametersSection: NSStackView? = nil
@@ -28,12 +34,24 @@ class ConfigViewController: NSViewController {
     self.view = NSView()
     self.view.translatesAutoresizingMaskIntoConstraints = false
 
+    let scrollView = NSScrollView()
+    scrollView.translatesAutoresizingMaskIntoConstraints = false
+    scrollView.hasVerticalScroller = true
+    scrollView.hasHorizontalScroller = false
+    scrollView.autohidesScrollers = true
+    scrollView.drawsBackground = false
+    self.view.addSubview(scrollView)
+
+    let documentView = SettingsDocumentView()
+    documentView.translatesAutoresizingMaskIntoConstraints = false
+    scrollView.documentView = documentView
+
     self.stackView = NSStackView()
     self.stackView.orientation = .vertical
     self.stackView.spacing = 16
     self.stackView.alignment = .leading
     self.stackView.translatesAutoresizingMaskIntoConstraints = false
-    self.view.addSubview(self.stackView)
+    documentView.addSubview(self.stackView)
     
     // Title
     let titleLabel = NSTextField(labelWithString: "ScreenSlanger")
@@ -86,6 +104,48 @@ class ConfigViewController: NSViewController {
     
     self.stackView.addArrangedSubview(buttonStack)
     
+    // Rendering preferences
+    let renderingSection = NSStackView()
+    renderingSection.orientation = .vertical
+    renderingSection.alignment = .leading
+    renderingSection.spacing = 8
+    renderingSection.translatesAutoresizingMaskIntoConstraints = false
+    let renderingTitle = NSTextField(labelWithString: "Rendering")
+    renderingTitle.font = .boldSystemFont(ofSize: 14)
+    renderingSection.addArrangedSubview(renderingTitle)
+
+    let frameRateRow = NSStackView()
+    frameRateRow.orientation = .horizontal
+    frameRateRow.alignment = .centerY
+    frameRateRow.spacing = 8
+    frameRateRow.addArrangedSubview(NSTextField(labelWithString: "Frames per second:"))
+    self.frameRateField = NSTextField(string: String(self.config.targetFPS))
+    self.frameRateField.delegate = self
+    self.frameRateField.placeholderString = "1–240"
+    self.frameRateField.toolTip = "Choose 1–240 frames per second. Lower values use less power."
+    self.frameRateField.setAccessibilityLabel("Frames per second")
+    self.frameRateField.translatesAutoresizingMaskIntoConstraints = false
+    self.frameRateField.widthAnchor.constraint(equalToConstant: 70).isActive = true
+    frameRateRow.addArrangedSubview(self.frameRateField)
+    renderingSection.addArrangedSubview(frameRateRow)
+
+    self.animateWhenIdleCheckbox = NSButton(
+      checkboxWithTitle: "Animate while desktop is still", target: self,
+      action: #selector(self.animateWhenIdleChanged(_:)))
+    self.animateWhenIdleCheckbox.state = self.config.animateWhenIdle ? .on : .off
+    renderingSection.addArrangedSubview(self.animateWhenIdleCheckbox)
+    let animationExplanation = NSTextField(wrappingLabelWithString:
+      "Keep time-based effects moving when the screen is unchanged. Turn this off for static filters to save power.")
+    animationExplanation.textColor = .secondaryLabelColor
+    animationExplanation.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+    animationExplanation.translatesAutoresizingMaskIntoConstraints = false
+    renderingSection.addArrangedSubview(animationExplanation)
+    self.stackView.addArrangedSubview(renderingSection)
+    NSLayoutConstraint.activate([
+      renderingSection.widthAnchor.constraint(equalTo: self.stackView.widthAnchor),
+      animationExplanation.widthAnchor.constraint(equalTo: renderingSection.widthAnchor),
+    ])
+
     // Monitor selection section
     self.monitorSection = NSStackView()
     self.monitorSection?.orientation = .vertical
@@ -97,16 +157,7 @@ class ConfigViewController: NSViewController {
     
     // Add Slang availability indicator
     if !SlangCompiler.isAvailable {
-      let warningLabel = NSTextField(labelWithString: "⚠️ slangc not found - Slang shaders won't compile")
-      warningLabel.textColor = .systemOrange
-      warningLabel.translatesAutoresizingMaskIntoConstraints = false
-      self.stackView.addArrangedSubview(warningLabel)
-    }
-    
-    // Add RetroArch tools availability indicator
-    if !RetroArchShaderCompiler.isAvailable {
-      let missing = RetroArchShaderCompiler.missingTools.joined(separator: "\n")
-      let warningLabel = NSTextField(labelWithString: "⚠️ RetroArch shader tools missing:\n\(missing)")
+      let warningLabel = NSTextField(labelWithString: "⚠️ The bundled shader compiler is unavailable - Slang shaders won't compile")
       warningLabel.textColor = .systemOrange
       warningLabel.translatesAutoresizingMaskIntoConstraints = false
       self.stackView.addArrangedSubview(warningLabel)
@@ -132,17 +183,28 @@ class ConfigViewController: NSViewController {
     self.errorMessageField.translatesAutoresizingMaskIntoConstraints = false
     self.stackView.addArrangedSubview(self.errorMessageField)
 
-    self.errorMessage.onMessageChanged = {
+    self.errorMessage.onMessageChanged = { [weak self] in
+      guard let self else { return }
       self.errorMessageField.stringValue = self.errorMessage.get() ?? ""
       self.errorMessageField.isHidden = self.errorMessage.get() == nil
     }
     self.errorMessage.onMessageChanged?()
 
     NSLayoutConstraint.activate([
-      self.stackView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor, constant: 20),
-      self.stackView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor, constant: -20),
-      self.stackView.topAnchor.constraint(equalTo: self.view.topAnchor, constant: 20),
-      
+      scrollView.leadingAnchor.constraint(equalTo: self.view.leadingAnchor),
+      scrollView.trailingAnchor.constraint(equalTo: self.view.trailingAnchor),
+      scrollView.topAnchor.constraint(equalTo: self.view.topAnchor),
+      scrollView.bottomAnchor.constraint(equalTo: self.view.bottomAnchor),
+      documentView.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+      documentView.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+      documentView.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+      self.stackView.leadingAnchor.constraint(equalTo: documentView.leadingAnchor, constant: 20),
+      self.stackView.trailingAnchor.constraint(equalTo: documentView.trailingAnchor, constant: -20),
+      self.stackView.topAnchor.constraint(equalTo: documentView.topAnchor, constant: 20),
+      self.stackView.bottomAnchor.constraint(equalTo: documentView.bottomAnchor, constant: -20),
+      shaderPathStack.widthAnchor.constraint(equalTo: self.stackView.widthAnchor),
+      self.parametersSection!.widthAnchor.constraint(equalTo: self.stackView.widthAnchor),
+      self.errorMessageField.widthAnchor.constraint(equalTo: self.stackView.widthAnchor),
       self.shaderPathField.widthAnchor.constraint(greaterThanOrEqualToConstant: 300),
     ])
   }
@@ -188,12 +250,30 @@ class ConfigViewController: NSViewController {
   }
   
   func refreshUI() {
+    guard self.isViewLoaded else { return }
+    self.frameRateField.integerValue = self.config.targetFPS
+    self.animateWhenIdleCheckbox.state = self.config.animateWhenIdle ? .on : .off
     self.activateButton.title = self.getActivateButtonTitle()
     self.activateButton.isEnabled = self.config.hasShaderPath()
     self.updateMonitorUI()
     self.updateParameterUI()
   }
   
+  func controlTextDidEndEditing(_ notification: Notification) {
+    guard let field = notification.object as? NSTextField, field === self.frameRateField else { return }
+    let previous = self.config.targetFPS
+    if let requested = Int(field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+      self.config.targetFPS = requested
+    }
+    field.integerValue = self.config.targetFPS
+    if self.config.targetFPS != previous { self.onConfigUpdate() }
+  }
+
+  @objc private func animateWhenIdleChanged(_ sender: NSButton) {
+    self.config.animateWhenIdle = sender.state == .on
+    self.onConfigUpdate()
+  }
+
   /// Update the monitor selection UI
   func updateMonitorUI() {
     // Remove existing monitor controls
@@ -208,7 +288,7 @@ class ConfigViewController: NSViewController {
     
     // Add a checkbox for each connected display
     for (index, screen) in NSScreen.screens.enumerated() {
-      let displayID = getDisplayID(for: screen)
+      guard let displayID = getDisplayID(for: screen) else { continue }
       let isEnabled = config.isDisplayEnabled(displayID)
       
       // Get display name
@@ -228,8 +308,8 @@ class ConfigViewController: NSViewController {
   }
   
   /// Get the CGDirectDisplayID for a screen
-  private func getDisplayID(for screen: NSScreen) -> CGDirectDisplayID {
-    let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber
+  private func getDisplayID(for screen: NSScreen) -> CGDirectDisplayID? {
+    guard let screenNumber = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
     return CGDirectDisplayID(screenNumber.uint32Value)
   }
   
@@ -273,7 +353,8 @@ class ConfigViewController: NSViewController {
       // Parameter name label
       let nameLabel = NSTextField(labelWithString: param.description)
       nameLabel.translatesAutoresizingMaskIntoConstraints = false
-      nameLabel.toolTip = param.name
+      nameLabel.toolTip = "\(param.description) (\(param.name))"
+      nameLabel.lineBreakMode = .byTruncatingTail
       paramStack.addArrangedSubview(nameLabel)
       
       // Slider
@@ -307,8 +388,9 @@ class ConfigViewController: NSViewController {
       
       // Add width constraints
       NSLayoutConstraint.activate([
-        nameLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 150),
-        slider.widthAnchor.constraint(equalToConstant: 200),
+        paramStack.widthAnchor.constraint(equalTo: self.parametersSection!.widthAnchor),
+        nameLabel.widthAnchor.constraint(equalToConstant: 220),
+        slider.widthAnchor.constraint(greaterThanOrEqualToConstant: 160),
         valueLabel.widthAnchor.constraint(equalToConstant: 50)
       ])
     }
@@ -390,6 +472,7 @@ class ConfigWindowController: NSWindowController {
     guard let window = self.window else { return }
 
     window.title = "ScreenSlanger Settings"
+    window.contentMinSize = NSSize(width: 600, height: 380)
 
     self.configViewController.config = self.config
     self.configViewController.onConfigUpdate = self.onConfigUpdate
