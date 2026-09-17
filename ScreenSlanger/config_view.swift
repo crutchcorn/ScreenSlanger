@@ -3,6 +3,7 @@ import AppKit
 class ConfigViewController: NSViewController {
   var config: Config! = nil
   var onConfigUpdate: () -> Void = {}
+  var onReloadShader: () -> Void = {}
   var errorMessage: ErrorMessage! = nil
   var parameterState: ShaderParameterState? = nil
   var onParameterChanged: ((String, Float) -> Void)? = nil
@@ -183,8 +184,7 @@ class ConfigViewController: NSViewController {
   }
   
   @objc func reloadShader() {
-    // Force re-read of the shader file by triggering an update
-    self.onConfigUpdate()
+    self.onReloadShader()
   }
   
   func refreshUI() {
@@ -380,6 +380,7 @@ class ConfigWindowController: NSWindowController {
   var config: Config! = nil
   var errorMessage: ErrorMessage! = nil
   var onConfigUpdate: () -> Void = {}
+  var onReloadShader: () -> Void = {}
   var parameterState: ShaderParameterState? = nil
   var onParameterChanged: ((String, Float) -> Void)? = nil
 
@@ -392,6 +393,7 @@ class ConfigWindowController: NSWindowController {
 
     self.configViewController.config = self.config
     self.configViewController.onConfigUpdate = self.onConfigUpdate
+    self.configViewController.onReloadShader = self.onReloadShader
     self.configViewController.errorMessage = self.errorMessage
     self.configViewController.parameterState = self.parameterState
     self.configViewController.onParameterChanged = self.onParameterChanged

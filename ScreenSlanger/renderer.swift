@@ -74,39 +74,38 @@ class SharedMetalResources {
   }
   
   private var currentShaderPath: String? = nil
+
+  func invalidateEffect() {
+    // A preset can reference edited shaders, includes, or textures even when
+    // the preset text itself has not changed.
+    self.activeEffectSource = nil
+  }
   
   func setEffectSource(_ effectSource: String?, shaderPath: String? = nil) throws {
-    // Skip if shader hasn't changed and we already have a valid pipeline
-    // For preset files (.slangp), compare by path since the effectSource changes after loading
-    // But never skip if effectSource is nil (deactivation) or was nil (activation)
-    let isDeactivating = effectSource == nil
-    let wasDeactivated = activeEffectSource == nil
-    if !isDeactivating && !wasDeactivated && shaderPath == currentShaderPath && currentShaderPath != nil && renderPipeline != nil {
-      return
-    }
-    if effectSource == activeEffectSource && shaderPath == currentShaderPath {
+    if effectSource != nil && effectSource == activeEffectSource
+      && shaderPath == currentShaderPath && renderPipeline != nil {
       return
     }
     
-    // Reset state
+    // Cache only successful compilations. A failure must not reuse an old
+    // pipeline on another display or suppress a later retry of the same file.
+    self.activeEffectSource = nil
+    self.currentShaderPath = nil
+    self.renderPipeline = nil
+    self.activeShaderType = .none
+    self.parameterState = ShaderParameterState()
     self.shaderPreset = nil
-    self.currentShaderPath = shaderPath
+    self.shaderDirectory = nil
     self.loadedTextures.removeAll()
     self.textureSamplers.removeAll()
     
-    guard let effectSource = effectSource else {
-      self.activeEffectSource = nil
-      self.renderPipeline = nil
-      self.activeShaderType = .none
-      self.parameterState = ShaderParameterState()
-      return
-    }
-    
-    self.activeEffectSource = effectSource
+    guard let effectSource = effectSource else { return }
     
     // Check if this is a .slangp preset file
     if let path = shaderPath, path.hasSuffix(".slangp") {
       try loadFromPreset(presetPath: path)
+      self.activeEffectSource = effectSource
+      self.currentShaderPath = shaderPath
       return
     }
     
@@ -140,6 +139,8 @@ class SharedMetalResources {
       self.activeShaderType = .slang
       self.parameterState = ShaderParameterState()
     }
+    self.activeEffectSource = effectSource
+    self.currentShaderPath = shaderPath
   }
   
   /// Load shader from a .slangp preset file
@@ -153,7 +154,6 @@ class SharedMetalResources {
     self.shaderDirectory = shaderURL.deletingLastPathComponent()
     
     let shaderSource = try String(contentsOf: shaderURL, encoding: .utf8)
-    self.activeEffectSource = shaderSource
     
     // Compile the shader
     let (pipeline, parameters, samplers) = try MetalRenderer.buildRetroArchPipeline(
@@ -195,10 +195,20 @@ class SharedMetalResources {
       let texture = try textureLoader.newTexture(
         URL: url,
         options: [
-          .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+          .textureUsage: MTLTextureUsage([.shaderRead, .pixelFormatView]).rawValue,
           .textureStorageMode: MTLStorageMode.private.rawValue
         ]
       )
+      // Single-channel images (such as the EINK paper background) represent
+      // grayscale. Expand them at sampling time without rewriting shader code.
+      if texture.pixelFormat == .r8Unorm || texture.pixelFormat == .r16Unorm
+        || texture.pixelFormat == .r16Float || texture.pixelFormat == .r32Float {
+        return texture.makeTextureView(
+          pixelFormat: texture.pixelFormat, textureType: texture.textureType,
+          levels: 0..<texture.mipmapLevelCount,
+          slices: 0..<texture.arrayLength,
+          swizzle: MTLTextureSwizzleChannels(red: .red, green: .red, blue: .red, alpha: .one))
+      }
       return texture
     } catch {
       return nil

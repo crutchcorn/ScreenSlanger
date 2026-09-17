@@ -409,8 +409,8 @@ class RetroArchShaderCompiler {
             try? FileManager.default.removeItem(at: tempDir)
         }
         
-        // Compile vertex shader: GLSL -> SPIRV -> Metal
-        let vertexMetal = try compileStage(
+        // Validate the supplied vertex stage even though rendering uses a procedural quad.
+        _ = try compileStage(
             source: stages.vertexSource,
             stage: "vert",
             glslangPath: glslangPath,
@@ -430,11 +430,7 @@ class RetroArchShaderCompiler {
         )
         
         // Combine Metal sources
-        let combinedMetal = combineMetalShaders(
-            vertexMetal: vertexMetal,
-            fragmentMetal: fragmentMetal,
-            parameters: stages.parameters
-        )
+        let combinedMetal = combineMetalShaders(fragmentMetal: fragmentMetal)
         
         // Parse actual Metal texture bindings from generated code
         // spirv-cross remaps bindings sequentially, so we need to extract the actual indices
@@ -514,38 +510,17 @@ class RetroArchShaderCompiler {
             glslangProcess.arguments?.insert("-I\(dir.path)", at: 1)
         }
         
-        // Use file-based output capture for more reliable error capture
-        let glslangStdoutFile = tempDir.appendingPathComponent("glslang_stdout.txt")
-        let glslangStderrFile = tempDir.appendingPathComponent("glslang_stderr.txt")
-        
-        FileManager.default.createFile(atPath: glslangStdoutFile.path, contents: nil)
-        FileManager.default.createFile(atPath: glslangStderrFile.path, contents: nil)
-        
-        let stdoutHandle = try FileHandle(forWritingTo: glslangStdoutFile)
-        let stderrHandle = try FileHandle(forWritingTo: glslangStderrFile)
-        
-        glslangProcess.standardOutput = stdoutHandle
-        glslangProcess.standardError = stderrHandle
-        
+        let glslangDiagnostics: String
         do {
-            try glslangProcess.run()
-            glslangProcess.waitUntilExit()
+            glslangDiagnostics = try runShaderCompilerProcess(
+                glslangProcess, outputFile: tempDir.appendingPathComponent("glslang.\(stage).log"))
         } catch {
             throw RetroArchShaderError.processError("Failed to run glslangValidator: \(error)")
         }
-        
-        try? stdoutHandle.close()
-        try? stderrHandle.close()
-        
-        let stdoutMessage = (try? String(contentsOf: glslangStdoutFile, encoding: .utf8)) ?? ""
-        let stderrMessage = (try? String(contentsOf: glslangStderrFile, encoding: .utf8)) ?? ""
-        
+
         if glslangProcess.terminationStatus != 0 {
-            let combinedError = [stdoutMessage, stderrMessage]
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
             throw RetroArchShaderError.glslCompilationFailed(
-                combinedError.isEmpty ? "glslang failed with exit code \(glslangProcess.terminationStatus). Check temp files at: \(tempDir.path)" : combinedError
+                glslangDiagnostics.isEmpty ? "glslangValidator exited with code \(glslangProcess.terminationStatus)" : glslangDiagnostics
             )
         }
         
@@ -563,21 +538,18 @@ class RetroArchShaderCompiler {
             "--output", metalFile.path
         ]
         
-        let spirvCrossError = Pipe()
-        spirvCrossProcess.standardError = spirvCrossError
-        spirvCrossProcess.standardOutput = Pipe()
-        
+        let spirvCrossDiagnostics: String
         do {
-            try spirvCrossProcess.run()
-            spirvCrossProcess.waitUntilExit()
+            spirvCrossDiagnostics = try runShaderCompilerProcess(
+                spirvCrossProcess, outputFile: tempDir.appendingPathComponent("spirv-cross.\(stage).log"))
         } catch {
             throw RetroArchShaderError.processError("Failed to run spirv-cross: \(error)")
         }
         
         if spirvCrossProcess.terminationStatus != 0 {
-            let errorData = spirvCrossError.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw RetroArchShaderError.spirvConversionFailed(errorMessage)
+            throw RetroArchShaderError.spirvConversionFailed(
+                spirvCrossDiagnostics.isEmpty ? "spirv-cross exited with code \(spirvCrossProcess.terminationStatus)" : spirvCrossDiagnostics
+            )
         }
         
         // Read Metal source
@@ -588,161 +560,21 @@ class RetroArchShaderCompiler {
         return metalSource
     }
     
-    /// Combine vertex and fragment Metal shaders into a single source file
-    private static func combineMetalShaders(
-        vertexMetal: String,
-        fragmentMetal: String,
-        parameters: [ShaderParameter]
-    ) -> String {
-        // ScreenSlanger renders fullscreen quads procedurally without vertex buffers.
-        // The RetroArch vertex shader expects vertex inputs, so we need to:
-        // 1. Use a custom vertex shader that generates fullscreen quad vertices
-        // 2. Extract shared structs (Push, UBO) from the generated Metal code
-        // 3. Use the RetroArch fragment shader as-is
-        
-        // Extract structs from vertex shader (Push is shared, UBO is not needed for our vertex shader)
-        var sharedStructs = ""
-        var inStruct = false
-        var braceCount = 0
-        var currentStruct = ""
-        
-        for line in vertexMetal.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            // Capture struct definitions (Push only - we generate our own vertex shader)
-            if trimmed.hasPrefix("struct Push") {
-                inStruct = true
-                braceCount = 0
-                currentStruct = ""
-            }
-            
-            if inStruct {
-                currentStruct += line + "\n"
-                braceCount += line.filter { $0 == "{" }.count
-                braceCount -= line.filter { $0 == "}" }.count
-                if braceCount == 0 && currentStruct.contains("{") {
-                    sharedStructs += currentStruct + "\n"
-                    inStruct = false
-                    currentStruct = ""
-                }
-            }
-        }
-        
-        // Extract fragment function and its output struct from fragment shader
-        // First, rename fragment_main_in references since we'll provide our own vertex output
-        var fragmentProcessed = fragmentMetal
-        
-        // Extract fragment_main_out struct
-        var fragmentOutStruct = ""
-        inStruct = false
-        braceCount = 0
-        currentStruct = ""
-        
-        for line in fragmentMetal.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            if trimmed.hasPrefix("struct fragment_main_out") {
-                inStruct = true
-                braceCount = 0
-                currentStruct = ""
-            }
-            
-            if inStruct {
-                currentStruct += line + "\n"
-                braceCount += line.filter { $0 == "{" }.count
-                braceCount -= line.filter { $0 == "}" }.count
-                if braceCount == 0 && currentStruct.contains("{") {
-                    fragmentOutStruct = currentStruct
-                    inStruct = false
-                    break
-                }
-            }
-        }
-        
-        // Extract fragment function
-        var fragmentFunction = ""
-        var inFunction = false
-        braceCount = 0
-        
-        for line in fragmentMetal.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            
-            if trimmed.hasPrefix("fragment fragment_main_out fragment_main") {
-                inFunction = true
-                braceCount = 0
-            }
-            
-            if inFunction {
-                fragmentFunction += line + "\n"
-                braceCount += line.filter { $0 == "{" }.count
-                braceCount -= line.filter { $0 == "}" }.count
-                if braceCount == 0 && fragmentFunction.contains("{") {
-                    break
-                }
-            }
-        }
-        
-        // Replace fragment_main_in with VertexOut in the fragment function
-        fragmentFunction = fragmentFunction.replacingOccurrences(
-            of: "fragment_main_in",
-            with: "VertexOut"
-        )
-        
-        // Fix grayscale texture sampling: BACKGROUND textures may be grayscale (R8)
-        // When sampling a grayscale texture, only .r has the value, .gb are 0
-        // Replace BACKGROUND.sample(...).xyz with BACKGROUND.sample(...).rrr
-        // This uses regex to handle any sampler name like BACKGROUNDSmplr
-        fragmentFunction = fragmentFunction.replacingOccurrences(
-            of: "BACKGROUND.sample(BACKGROUNDSmplr,",
-            with: "float4(BACKGROUND.sample(BACKGROUNDSmplr,"
-        )
-        // Find the pattern: BACKGROUND.sample(...).xyz and change to use .rrr
-        // Since the sample returns float4, we need to extract just the red channel repeated
-        if let range = fragmentFunction.range(of: "float4(BACKGROUND.sample(BACKGROUNDSmplr, (bgPixelCoord * 0.000244140625))).xyz") {
-            fragmentFunction = fragmentFunction.replacingCharacters(
-                in: range, 
-                with: "BACKGROUND.sample(BACKGROUNDSmplr, (bgPixelCoord * 0.000244140625)).rrr"
-            )
-        } else {
-            // More generic approach - fix any BACKGROUND sampling that ends in .xyz
-            fragmentFunction = fragmentFunction.replacingOccurrences(
-                of: "float4(BACKGROUND.sample(BACKGROUNDSmplr,",
-                with: "BACKGROUND.sample(BACKGROUNDSmplr,"
-            )
-            // Replace .xyz with .rrr for BACKGROUND texture samples
-            // This is a heuristic - look for the pattern in the generated code
-            var lines = fragmentFunction.components(separatedBy: .newlines)
-            for i in 0..<lines.count {
-                if lines[i].contains("BACKGROUND.sample") && lines[i].contains(".xyz") {
-                    lines[i] = lines[i].replacingOccurrences(of: ".xyz", with: ".rrr")
-                }
-            }
-            fragmentFunction = lines.joined(separator: "\n")
-        }
-        
-        // Build combined shader with custom vertex shader
-        let combined = """
-        // Combined RetroArch shader compiled for Metal
-        // Auto-generated by ScreenSlanger
-        
-        #include <metal_stdlib>
-        #include <simd/simd.h>
-        
-        using namespace metal;
-        
-        // === Shared Structs from RetroArch Shader ===
-        \(sharedStructs)
-        
-        // === Vertex Shader Output / Fragment Shader Input ===
-        // Note: [[user(locn0)]] matches spirv-cross's layout(location = 0)
-        struct VertexOut {
+    /// Keep all generated fragment declarations and add the application's procedural vertex stage.
+    private static func combineMetalShaders(fragmentMetal: String) -> String {
+        // Metal links stage inputs by their user location attributes, not by their struct
+        // or member names. Keep fragment_main_in and all helpers, globals, and uniforms
+        // intact; the custom vertex output supplies its texture coordinates at location 0.
+        return """
+        // RetroArch fragment shader compiled by SPIRV-Cross
+        \(fragmentMetal)
+
+        struct ScreenSlangerVertexOut {
             float4 position [[position]];
-            float2 vTexCoord [[user(locn0)]];
+            float2 texCoord [[user(locn0)]];
         };
-        
-        // === Custom Vertex Shader (Fullscreen Quad) ===
-        vertex VertexOut vertex_main(uint vertexId [[vertex_id]]) {
-            // Generate fullscreen quad vertices procedurally
+
+        vertex ScreenSlangerVertexOut vertex_main(uint vertexId [[vertex_id]]) {
             float2 quadVertices[6] = {
                 float2(-1.0, -1.0),
                 float2( 1.0, -1.0),
@@ -751,26 +583,19 @@ class RetroArchShaderCompiler {
                 float2( 1.0, -1.0),
                 float2( 1.0,  1.0)
             };
-            
-            VertexOut out;
+
+            ScreenSlangerVertexOut out;
             out.position = float4(quadVertices[vertexId], 0.0, 1.0);
-            // Texture coordinates: (0,0) at top-left, (1,1) at bottom-right
-            out.vTexCoord = float2(
+            // Texture coordinates: (0,0) at top-left, (1,1) at bottom-right.
+            out.texCoord = float2(
                 (quadVertices[vertexId].x + 1.0) * 0.5,
                 (1.0 - quadVertices[vertexId].y) * 0.5
             );
             return out;
         }
-        
-        // === Fragment Shader Output ===
-        \(fragmentOutStruct)
-        
-        // === Fragment Shader ===
-        \(fragmentFunction)
         """
-        
-        return combined
     }
+
 }
 
 // MARK: - Integration with SlangCompiler

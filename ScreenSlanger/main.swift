@@ -196,6 +196,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     self.configWindowController!.onConfigUpdate = { [weak self] in
       self?.refreshConfig()
     }
+    self.configWindowController!.onReloadShader = { [weak self] in
+      SharedMetalResources.shared.invalidateEffect()
+      self?.refreshConfig()
+    }
     self.configWindowController!.errorMessage = self.errorMessage
     self.configWindowController!.parameterState = self.getFirstParameterState()
     self.configWindowController!.onParameterChanged = { [weak self] name, value in

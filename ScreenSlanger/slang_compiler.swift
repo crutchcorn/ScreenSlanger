@@ -42,7 +42,7 @@ struct ShaderParameter {
             .trimmingCharacters(in: .whitespaces)
         
         // Parse: NAME "Description" default min max [step]
-        var scanner = Scanner(string: content)
+        let scanner = Scanner(string: content)
         scanner.charactersToBeSkipped = CharacterSet.whitespaces
         
         // Parse name
@@ -77,6 +77,21 @@ struct PreprocessedShader {
     let source: String
     let parameters: [ShaderParameter]
     let isRetroArchStyle: Bool
+}
+
+/// Capture both output streams on disk so verbose compiler diagnostics cannot fill a pipe
+/// while the parent process waits for compilation to finish.
+func runShaderCompilerProcess(_ process: Process, outputFile: URL) throws -> String {
+    try Data().write(to: outputFile)
+    let outputHandle = try FileHandle(forWritingTo: outputFile)
+    defer { try? outputHandle.close() }
+
+    process.standardOutput = outputHandle
+    process.standardError = outputHandle
+    try process.run()
+    process.waitUntilExit()
+
+    return String(decoding: try Data(contentsOf: outputFile), as: UTF8.self)
 }
 
 /// Wrapper for the Slang shader compiler
@@ -160,22 +175,19 @@ class SlangCompiler {
             "-o", outputFile.path
         ]
         
-        let errorPipe = Pipe()
-        process.standardError = errorPipe
-        process.standardOutput = Pipe() // Capture stdout too
-        
+        let diagnostics: String
         do {
-            try process.run()
-            process.waitUntilExit()
+            diagnostics = try runShaderCompilerProcess(
+                process, outputFile: tempDir.appendingPathComponent("slangc.log"))
         } catch {
             throw SlangCompilerError.processError(error.localizedDescription)
         }
         
         // Check for compilation errors
         if process.terminationStatus != 0 {
-            let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw SlangCompilerError.compilationFailed(errorMessage)
+            throw SlangCompilerError.compilationFailed(
+                diagnostics.isEmpty ? "slangc exited with code \(process.terminationStatus)" : diagnostics
+            )
         }
         
         // Read the generated Metal source
