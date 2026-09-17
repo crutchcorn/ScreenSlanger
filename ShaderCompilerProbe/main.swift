@@ -30,6 +30,10 @@ if CommandLine.arguments.dropFirst().first == "--verify" {
     } catch {
         fail("Unexpected compiler failure: \(error.localizedDescription)")
     }
+} else if CommandLine.arguments.dropFirst().first == "--hang" {
+    // Exercise forced termination, not only the happy path where SIGTERM works.
+    signal(SIGTERM, SIG_IGN)
+    while true { Thread.sleep(forTimeInterval: 1) }
 } else {
     // The production compiler invokes this executable as its mock slangc.
     // Both streams exceed a pipe's capacity, exposing wait-before-drain bugs.
