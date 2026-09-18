@@ -736,6 +736,42 @@ struct ShaderTests {
         #expect(resources.effect?.id == current.id)
     }
 
+    @Test("Concurrent RetroArch loads and later compiler exits preserve independent live pipelines")
+    func independentCompilerLifetimes() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstURL = directory.appendingPathComponent("first.slang")
+        let secondURL = directory.appendingPathComponent("second.slang")
+        try retroArchSource(fragment: "vec4(0.125, 0.25, 0.5, 1.0)")
+            .write(to: firstURL, atomically: true, encoding: .utf8)
+        try retroArchSource(fragment: "vec4(0.75, 0.5, 0.25, 1.0)")
+            .write(to: secondURL, atomically: true, encoding: .utf8)
+        let device = SharedMetalResources.shared.device
+        let first = SharedMetalResources(device: device)
+        let second = SharedMetalResources(device: device)
+        defer { first.clear(); second.clear() }
+        async let firstLoad: Void = first.loadEffect(ShaderLoadRequest(url: firstURL))
+        async let secondLoad: Void = second.loadEffect(ShaderLoadRequest(url: secondURL))
+        try await firstLoad
+        try await secondLoad
+
+        func pixels(_ resources: SharedMetalResources) throws -> [UInt8] {
+            let destination = try makeTexture()
+            let command = try #require(resources.commandQueue.makeCommandBuffer())
+            try ShaderRenderCore(resources: resources).encode(commandBuffer: command,
+                source: makeTexture(pixels: inputPixels), destination: destination,
+                context: ShaderFrameContext(outputSize: SIMD2(2, 2)))
+            return try finishRendering(command, to: destination)
+        }
+        try expectPixels(pixels(first), expected: solidPixel([128, 64, 32, 255]))
+        try expectPixels(pixels(second), expected: solidPixel([64, 128, 191, 255]))
+        try retroArchSource(fragment: "vec4(0.0, 1.0, 0.0, 1.0)")
+            .write(to: firstURL, atomically: true, encoding: .utf8)
+        try await first.loadEffect(ShaderLoadRequest(url: firstURL))
+        try expectPixels(pixels(first), expected: solidPixel([0, 255, 0, 255]))
+        try expectPixels(pixels(second), expected: solidPixel([64, 128, 191, 255]))
+    }
+
     private func solidPixel(_ pixel: [UInt8]) -> [UInt8] {
         Array(repeating: pixel, count: 4).flatMap { $0 }
     }

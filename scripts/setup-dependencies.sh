@@ -8,13 +8,13 @@ fi
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 slang_version="2026.18"
-librashader_version="0.12.0-screenslanger.2"
+librashader_version="0.12.0-screenslanger.3"
 librashader_upstream_version="0.12.0"
 librashader_source_sha256="4bf8cf2489d00848dcabbf2163204093776082da4217d5a5db45e4cbf335cedf"
 librashader_rust_version="1.93.0"
-librashader_patches=(0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch 0003-stream-metal-lut-loading.patch)
+librashader_patches=(0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch 0003-stream-metal-lut-loading.patch 0004-isolate-retroarch-compiler.patch)
 # Reviewed patches against the checksum-pinned source archive, not upstream binaries.
-librashader_patch_sha256=(f5a9c09c0f7a72059eb536fbd63eacbc513bea5fe964e70f3a122ae61bfd90fb 2fd5bd08afabf7f0ee6c8329fcfda778b6460001d7de50145c32af329138fe5e 3e3c574a0b8940f04502bece08442ab297bc1b9a7de89dff412b51566de9acfe)
+librashader_patch_sha256=(f5a9c09c0f7a72059eb536fbd63eacbc513bea5fe964e70f3a122ae61bfd90fb 2fd5bd08afabf7f0ee6c8329fcfda778b6460001d7de50145c32af329138fe5e 3e3c574a0b8940f04502bece08442ab297bc1b9a7de89dff412b51566de9acfe 1956179bfa7f89e4318c1aa3982656d24ea63e6dffe9494d87ad64a3f27dac8f)
 # Checksums published with the official v2026.18 GitHub release assets.
 # https://github.com/shader-slang/slang/releases/tag/v2026.18
 case "$(uname -m)" in
@@ -89,11 +89,12 @@ Upstream archive SHA-256: $librashader_source_sha256
 Patch 1 SHA-256: ${librashader_patch_sha256[0]}
 Patch 2 SHA-256: ${librashader_patch_sha256[1]}
 Patch 3 SHA-256: ${librashader_patch_sha256[2]}
+Patch 4 SHA-256: ${librashader_patch_sha256[3]}
 Rust toolchain: $librashader_rust_version
 Architecture: $librashader_arch
 MACOSX_DEPLOYMENT_TARGET: 27.0
 CARGO_PROFILE_OPTIMIZED_STRIP: none
-Build: cargo +$librashader_rust_version build --locked --profile optimized --package librashader-capi --no-default-features --features runtime-metal
+Build: cargo +$librashader_rust_version build --locked --profile optimized --package librashader-capi --package librashader-reflect --bin librashader-compiler --lib --no-default-features --features librashader-capi/runtime-metal,librashader-reflect/glslang-in
 BUILD_INFO
 )"
 mkdir -p "$librashader_root"
@@ -132,15 +133,19 @@ if [[ ! -e "$librashader_directory" ]]; then
             CARGO_PROFILE_OPTIMIZED_STRIP=none \
             CARGO_TARGET_DIR="$staging_directory/target" \
             cargo +"$librashader_rust_version" build --locked --profile optimized \
-            --package librashader-capi --no-default-features --features runtime-metal
+            --package librashader-capi --package librashader-reflect \
+            --bin librashader-compiler --lib --no-default-features \
+            --features librashader-capi/runtime-metal,librashader-reflect/glslang-in
     )
     cp "$staging_directory/target/optimized/liblibrashader_capi.dylib" "$staging_directory/install/librashader.dylib"
+    cp "$staging_directory/target/optimized/librashader-compiler" "$staging_directory/install/librashader-compiler"
     /usr/bin/lipo "$staging_directory/install/librashader.dylib" -verify_arch "$librashader_arch"
+    /usr/bin/lipo "$staging_directory/install/librashader-compiler" -verify_arch "$librashader_arch"
     printf '%s\n' "$expected_build_info" > "$staging_directory/install/BUILD-INFO.txt"
     (
         cd "$staging_directory/install"
         shasum -a 256 "$source_archive" "${librashader_patches[@]}" > SHA256SUMS
-        shasum -a 256 librashader.dylib > RUNTIME.sha256
+        shasum -a 256 librashader.dylib librashader-compiler > RUNTIME.sha256
     )
     mv "$staging_directory/install" "$librashader_directory"
     rm -rf "$staging_directory"
@@ -162,3 +167,4 @@ cp "$project_dir/Vendor/CLibrashader/BUILDING.md" "$librashader_directory/BUILDI
 printf '\nInstalled ScreenSlanger dependencies:\n'
 printf 'slang %s (%s)\n' "$installed_version" "$slang_root/current/bin/slangc"
 printf 'librashader %s (%s)\n' "$librashader_version" "$librashader_directory/librashader.dylib"
+printf 'librashader compiler (%s)\n' "$librashader_directory/librashader-compiler"

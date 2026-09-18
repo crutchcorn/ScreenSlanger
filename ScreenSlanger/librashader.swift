@@ -6,6 +6,7 @@ import Metal
 enum RetroArchRuntimeError: Error, LocalizedError {
     case unavailable(String)
     case incompleteBundle(String)
+    case compilerUnavailable
     case incompatibleVersion(abi: Int, api: Int)
     case runtime(String)
     case frameInFlight
@@ -16,12 +17,37 @@ enum RetroArchRuntimeError: Error, LocalizedError {
         case .unavailable(let detail):
             return "librashader could not be loaded. Run scripts/setup-dependencies.sh or set LIBRASHADER_PATH to librashader.dylib. \(detail)"
         case .incompleteBundle(let detail):
-            return "The app's bundled RetroArch runtime is missing or could not load. Reinstall a complete ScreenSlanger.app. \(detail)"
+            return "The app's bundled RetroArch runtime or compiler helper is missing or could not load. Reinstall a complete ScreenSlanger.app. \(detail)"
+        case .compilerUnavailable:
+            return "The RetroArch compiler helper is missing. Run scripts/setup-dependencies.sh or set LIBRASHADER_COMPILER_PATH to librashader-compiler."
         case .incompatibleVersion(let abi, let api):
             return "Incompatible librashader (ABI \(abi), API \(api)); ScreenSlanger requires ABI 2 and API 5 or later."
         case .runtime(let message): return "RetroArch shader: \(message)"
         case .frameInFlight: return "The previous RetroArch shader frame is still using its GPU resources."
         case .wrongCommandQueue: return "The RetroArch shader command buffer belongs to a different Metal command queue."
+        }
+    }
+}
+
+/// App bundles always use their own short-lived frontend. Development probes can
+/// override it, or keep it next to the selected runtime installation.
+enum RetroArchCompilerLocation {
+    static func findCompiler(
+        runtimeURL: URL,
+        bundle: Bundle = .main,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> String? {
+        let paths: [String]
+        if bundle.bundleURL.pathExtension.lowercased() == "app" {
+            paths = [bundle.bundleURL.appendingPathComponent("Contents/Helpers/librashader-compiler").path]
+        } else {
+            paths = [environment["LIBRASHADER_COMPILER_PATH"],
+                     runtimeURL.deletingLastPathComponent().appendingPathComponent("librashader-compiler").path]
+                .compactMap { $0 }
+        }
+        return paths.first { path in
+            FileManager.default.isExecutableFile(atPath: path)
+                && (try? URL(fileURLWithPath: path).resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
         }
     }
 }
@@ -237,7 +263,9 @@ private final class LibraState {
         }
         var chainOptions = filter_chain_mtl_opt_t()
         chainOptions.version = 5
-        try api.check(api.chainCreate(&preset, commandQueue, &chainOptions, &chain))
+        try api.check(api.compilerPath.withCString {
+            api.chainCreate(&preset, commandQueue, &chainOptions, $0, &chain)
+        })
         guard chain != nil else { throw RetroArchRuntimeError.runtime("Runtime returned no filter chain.") }
     }
 
@@ -296,11 +324,12 @@ private final class LibraState {
 /// Every instance owns its dlopen reference until the filter chain has been destroyed.
 private final class LibraAPI {
     private let handle: UnsafeMutableRawPointer
+    let compilerPath: String
     let presetCreate: PFN_libra_preset_create_with_options
     let presetFree: PFN_libra_preset_free
     let presetParameters: PFN_libra_preset_get_runtime_params
     let presetParametersFree: PFN_libra_preset_free_runtime_params
-    let chainCreate: PFN_libra_mtl_filter_chain_create
+    let chainCreate: PFN_screenslanger_mtl_filter_chain_create_with_compiler
     let chainFrame: PFN_libra_mtl_filter_chain_frame
     let chainSetParameter: PFN_libra_mtl_filter_chain_set_param
     let chainFree: PFN_libra_mtl_filter_chain_free
@@ -319,21 +348,23 @@ private final class LibraAPI {
             // Unhosted tests and compiler probes use the pinned development installation.
             paths = [
                 ProcessInfo.processInfo.environment["LIBRASHADER_PATH"],
-                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.2/librashader.dylib").path
+                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.3/librashader.dylib").path
             ].compactMap { $0 }
         }
         var loaded: UnsafeMutableRawPointer?
+        var loadedPath: String?
         var failures: [String] = []
         for path in paths where FileManager.default.fileExists(atPath: path) {
             // The Rust runtime may retain global worker threads. Keep its executable
             // mapping alive even after the last chain releases its dlopen reference.
             if let candidate = dlopen(path, RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE) {
                 loaded = candidate
+                loadedPath = path
                 break
             }
             if let error = dlerror() { failures.append(String(cString: error)) }
         }
-        guard let loaded else {
+        guard let loaded, let loadedPath else {
             let detail = failures.joined(separator: "\n")
             if isAppBundle { throw RetroArchRuntimeError.incompleteBundle(detail) }
             throw RetroArchRuntimeError.unavailable(detail)
@@ -344,6 +375,11 @@ private final class LibraAPI {
             return unsafeBitCast(pointer, to: T.self)
         }
         do {
+            guard let compiler = RetroArchCompilerLocation.findCompiler(runtimeURL: URL(fileURLWithPath: loadedPath)) else {
+                if isAppBundle { throw RetroArchRuntimeError.incompleteBundle("Missing librashader-compiler.") }
+                throw RetroArchRuntimeError.compilerUnavailable
+            }
+            compilerPath = compiler
             let abi: PFN_libra_instance_abi_version = try symbol("libra_instance_abi_version")
             let api: PFN_libra_instance_api_version = try symbol("libra_instance_api_version")
             guard abi() == 2, api() >= 5 else { throw RetroArchRuntimeError.incompatibleVersion(abi: abi(), api: api()) }
@@ -351,7 +387,7 @@ private final class LibraAPI {
             presetFree = try symbol("libra_preset_free")
             presetParameters = try symbol("libra_preset_get_runtime_params")
             presetParametersFree = try symbol("libra_preset_free_runtime_params")
-            chainCreate = try symbol("libra_mtl_filter_chain_create")
+            chainCreate = try symbol("screenslanger_mtl_filter_chain_create_with_compiler")
             chainFrame = try symbol("libra_mtl_filter_chain_frame")
             chainSetParameter = try symbol("libra_mtl_filter_chain_set_param")
             chainFree = try symbol("libra_mtl_filter_chain_free")

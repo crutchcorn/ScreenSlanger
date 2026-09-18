@@ -1,4 +1,5 @@
 $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers
+$(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/librashader-compiler
 $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/Slang.app
 $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/Slang.app/Contents
 $(TARGET_BUILD_DIR)/$(CONTENTS_FOLDER_PATH)/Helpers/Slang.app/Contents/Info.plist
@@ -74,5 +75,6 @@ $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0001-skip-unused-final-target.patch
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0002-compact-grayscale-luts.patch
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0003-stream-metal-lut-loading.patch
-// Pinned Slang 2026.18 + librashader 0.12.0-screenslanger.2 bundle contents.
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0004-isolate-retroarch-compiler.patch
+// Pinned Slang 2026.18 + librashader 0.12.0-screenslanger.3 bundle contents.
 // Xcode requires every file and directory explicitly for sandboxed script outputs.

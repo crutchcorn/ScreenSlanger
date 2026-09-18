@@ -297,4 +297,50 @@ struct CompilerLocationTests {
                 environment: ["SLANG_PATH": override.path], homeDirectory: directory) == override.path)
         }
     }
+
+    @Test("RetroArch helper discovery follows the moved app and ignores developer overrides")
+    func relocatedRetroArchCompiler() throws {
+        try withFixture { directory in
+            let original = directory.appendingPathComponent("Original.app")
+            _ = try fixtureBundle(at: original)
+            let relative = "Contents/Helpers/librashader-compiler"
+            try executable(at: original.appendingPathComponent(relative))
+            let other = directory.appendingPathComponent("developer/librashader-compiler")
+            try executable(at: other)
+            let moved = directory.appendingPathComponent("Moved app.app")
+            try FileManager.default.moveItem(at: original, to: moved)
+            let bundle = try #require(Bundle(url: moved))
+            #expect(RetroArchCompilerLocation.findCompiler(
+                runtimeURL: other.deletingLastPathComponent().appendingPathComponent("librashader.dylib"),
+                bundle: bundle, environment: ["LIBRASHADER_COMPILER_PATH": other.path])
+                    == moved.appendingPathComponent(relative).path)
+            try FileManager.default.removeItem(at: moved.appendingPathComponent(relative))
+            #expect(RetroArchCompilerLocation.findCompiler(
+                runtimeURL: other.deletingLastPathComponent().appendingPathComponent("librashader.dylib"),
+                bundle: bundle, environment: ["LIBRASHADER_COMPILER_PATH": other.path]) == nil)
+        }
+    }
+
+    @Test("Unhosted RetroArch tools use the selected runtime's adjacent helper or an explicit override")
+    func developmentRetroArchCompiler() throws {
+        try withFixture { directory in
+            let bundle = try fixtureBundle(at: directory.appendingPathComponent("Unhosted.bundle"))
+            let runtime = directory.appendingPathComponent("selected-runtime/librashader.dylib")
+            let adjacent = runtime.deletingLastPathComponent().appendingPathComponent("librashader-compiler")
+            let other = directory.appendingPathComponent("different compiler")
+            try executable(at: adjacent)
+            try executable(at: other)
+            #expect(RetroArchCompilerLocation.findCompiler(runtimeURL: runtime, bundle: bundle,
+                environment: [:]) == adjacent.path)
+            #expect(RetroArchCompilerLocation.findCompiler(runtimeURL: runtime, bundle: bundle,
+                environment: ["LIBRASHADER_COMPILER_PATH": other.path]) == other.path)
+            try FileManager.default.removeItem(at: adjacent)
+            try FileManager.default.createDirectory(at: adjacent, withIntermediateDirectories: true)
+            #expect(RetroArchCompilerLocation.findCompiler(runtimeURL: runtime, bundle: bundle,
+                environment: [:]) == nil)
+            try executable(at: other, executable: false)
+            #expect(RetroArchCompilerLocation.findCompiler(runtimeURL: runtime, bundle: bundle,
+                environment: ["LIBRASHADER_COMPILER_PATH": other.path]) == nil)
+        }
+    }
 }

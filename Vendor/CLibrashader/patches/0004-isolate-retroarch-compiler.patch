@@ -1,0 +1,1185 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1834,6 +1834,7 @@
+ version = "0.12.0"
+ dependencies = [
+  "array-concat",
++ "blake3",
+  "bytemuck",
+  "image",
+  "librashader-common",
+@@ -1849,6 +1850,7 @@
+  "objc2-metal-kit",
+  "objc2-quartz-core",
+  "rayon",
++ "tempfile",
+  "thiserror 2.0.18",
+ ]
+ 
+--- a/librashader-capi/src/runtime/mtl/filter_chain.rs
++++ b/librashader-capi/src/runtime/mtl/filter_chain.rs
+@@ -147,6 +147,33 @@
+                 chain,
+             )))))
+         }
++    }
++}
++
++extern_fn! {
++    /// ScreenSlanger extension: identical chain semantics with an explicitly
++    /// supplied, short-lived GLSL compiler helper. Consumes preset on every call.
++    fn screenslanger_mtl_filter_chain_create_with_compiler(
++        preset: *mut libra_shader_preset_t,
++        queue: PMTLCommandQueue,
++        options: *const MaybeUninit<filter_chain_mtl_opt_t>,
++        helper_path: *const c_char,
++        out: *mut MaybeUninit<libra_mtl_filter_chain_t>
++    ) |queue| {
++        assert_non_null!(preset);
++        assert_non_null!(helper_path);
++        assert_non_null!(out);
++        let preset = unsafe {
++            let Some(preset) = (&mut *preset).take() else {
++                return Err(LibrashaderError::InvalidParameter("preset"));
++            };
++            Box::from_raw(preset.as_ptr())
++        };
++        let helper = unsafe { CStr::from_ptr(helper_path) }.to_str()?;
++        let options = if options.is_null() { None } else { Some(unsafe { options.read() }) };
++        let options = options.map(FromUninit::from_uninit);
++        let chain = FilterChain::load_from_preset_with_compiler(*preset, queue.as_ref(), options.as_ref(), std::path::Path::new(helper))?;
++        unsafe { out.write(MaybeUninit::new(NonNull::new(Box::into_raw(Box::new(chain))))) };
+     }
+ }
+ 
+--- a/librashader-pack/src/lib.rs
++++ b/librashader-pack/src/lib.rs
+@@ -136,6 +136,41 @@
+ 
+ #[cfg(feature = "load")]
+ impl ShaderPresetPack {
++    /// Load without creating Rayon's process-lifetime worker pool. Metal uses this
++    /// for preprocessing before its short-lived external compiler handles all passes.
++    pub fn load_from_preset_serial<E>(preset: ShaderPreset) -> Result<ShaderPresetPack, E>
++    where
++        E: From<PreprocessError> + From<ImageError>,
++    {
++        Ok(ShaderPresetPack {
++            language: ShaderSourceLanguage::Glsl,
++            #[cfg(feature = "parse_legacy_glsl")]
++            feedback_pass: preset.feedback_pass,
++            pass_count: preset.pass_count,
++            passes: preset
++                .passes
++                .into_iter()
++                .map(|pass| {
++                    Ok::<_, E>(PassResource {
++                        data: PassMeta::load(&pass.path, preset.features)?,
++                        meta: pass.meta,
++                    })
++                })
++                .collect::<Result<Vec<_>, _>>()?,
++            textures: preset
++                .textures
++                .into_iter()
++                .map(|texture| {
++                    Ok::<_, E>(TextureResource {
++                        data: TextureMeta::load(&texture.path, ())?,
++                        meta: texture.meta,
++                    })
++                })
++                .collect::<Result<Vec<_>, _>>()?,
++            parameters: preset.parameters,
++        })
++    }
++
+     /// Load a `ShaderPack` from a [`ShaderPreset`].
+     pub fn load_from_preset<E>(preset: ShaderPreset) -> Result<ShaderPresetPack, E>
+     where
+--- a/librashader-reflect/Cargo.toml
++++ b/librashader-reflect/Cargo.toml
+@@ -10,6 +10,11 @@
+ categories = ["emulators", "compilers", "graphics"]
+ keywords = ["shader", "retroarch", "SPIR-V"]
+ description = "RetroArch shaders for all."
++
++[[bin]]
++name = "librashader-compiler"
++path = "src/bin/librashader-compiler.rs"
++required-features = ["glslang-in"]
+ 
+ [dependencies]
+ glslang = {  version = "0.8.1", optional = true }
+--- a/librashader-reflect/src/front/mod.rs
++++ b/librashader-reflect/src/front/mod.rs
+@@ -1,6 +1,9 @@
+ use crate::error::ShaderCompileError;
+ use librashader_preprocess::ShaderSource;
+ pub(crate) mod spirv_passes;
++
++/// Bounded protocol for compiling GLSL in a short-lived helper process.
++pub mod compile_wire;
+ 
+ #[cfg(feature = "glslang-in")]
+ mod glslang;
+--- /dev/null
++++ b/librashader-reflect/src/front/compile_wire.rs
+@@ -0,0 +1,506 @@
++//! Versioned, length-delimited transport for the out-of-process GLSL compiler.
++//!
++//! Only preprocessed vertex/fragment source text crosses the process boundary. The helper uses
++//! the same `Glslang::compile` path as an in-process load, including interface linking. Shader
++//! metadata remains in the caller. Integers are little-endian; lengths count bytes in requests
++//! and 32-bit SPIR-V words in responses. A message contains a magic, version, pass count, then
++//! a vertex and fragment field for every pass. There are no optional or trailing fields.
++
++use crate::front::SpirvCompilation;
++use librashader_preprocess::ShaderSource;
++use thiserror::Error;
++
++#[cfg(feature = "glslang-in")]
++use crate::front::{Glslang, ShaderInputCompiler};
++
++/// Maximum size of a complete request or response, including framing.
++pub const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
++/// Maximum shader pass count in one compilation batch.
++pub const MAX_PASSES: usize = 4096;
++/// Current protocol version. Changing compilation semantics also requires a cache-key change.
++pub const PROTOCOL_VERSION: u32 = 1;
++const REQUEST_MAGIC: &[u8; 8] = b"LBRACREQ";
++const RESPONSE_MAGIC: &[u8; 8] = b"LBRACRES";
++const HEADER_BYTES: usize = 16;
++
++/// An invalid compiler message or a failed shader compilation.
++#[derive(Debug, Error)]
++pub enum CompileWireError {
++    /// The complete message or a field cannot fit within the aggregate size limit.
++    #[error("compiler message exceeds the {MAX_MESSAGE_BYTES}-byte limit")]
++    MessageTooLarge,
++    /// A request or response contains too many shader passes.
++    #[error("compiler message exceeds the {MAX_PASSES}-pass limit")]
++    TooManyPasses,
++    /// The message does not identify the expected protocol direction.
++    #[error("incorrect compiler message magic")]
++    InvalidMagic,
++    /// The sender and receiver use different protocol versions.
++    #[error("unsupported compiler protocol version {0}")]
++    UnsupportedVersion(u32),
++    /// A header or length-prefixed field ends prematurely.
++    #[error("truncated compiler message")]
++    Truncated,
++    /// Source text must be UTF-8, matching Rust shader strings.
++    #[error("compiler source text is not UTF-8")]
++    InvalidUtf8,
++    /// Extra bytes follow the declared fields.
++    #[error("trailing bytes in compiler message")]
++    TrailingBytes,
++    /// The helper did not return exactly one result per requested pass.
++    #[error("compiler returned {actual} passes; expected {expected}")]
++    UnexpectedCount {
++        /// Requested pass count.
++        expected: usize,
++        /// Returned pass count.
++        actual: usize,
++    },
++    /// A response contains malformed SPIR-V or the wrong execution model.
++    #[error("invalid {stage} SPIR-V for pass {pass}: {reason}")]
++    InvalidSpirv {
++        /// Zero-based shader pass index.
++        pass: usize,
++        /// Vertex or fragment stage.
++        stage: &'static str,
++        /// Structural validation error.
++        reason: String,
++    },
++    /// The existing glslang frontend rejected a shader pass.
++    #[cfg(feature = "glslang-in")]
++    #[error("shader pass {pass}: {source}")]
++    Compile {
++        /// Zero-based shader pass index.
++        pass: usize,
++        /// Original compiler diagnostics, retaining original source line directives.
++        #[source]
++        source: crate::error::ShaderCompileError,
++    },
++}
++
++/// Serialize preprocessed sources without parameters, aliases, or output-format metadata.
++pub fn encode_request<'a>(
++    sources: impl IntoIterator<Item = &'a ShaderSource>,
++) -> Result<Vec<u8>, CompileWireError> {
++    let mut result = header(REQUEST_MAGIC, 0);
++    let mut count = 0;
++    for source in sources {
++        count += 1;
++        check_pass_count(count)?;
++        append_field(&mut result, source.vertex.as_bytes())?;
++        append_field(&mut result, source.fragment.as_bytes())?;
++    }
++    result[12..HEADER_BYTES].copy_from_slice(&(count as u32).to_le_bytes());
++    Ok(result)
++}
++
++/// Compile all sources through librashader's unchanged glslang and interface-linking path.
++///
++/// Framing is validated in full before compiling. Text is borrowed from the request while it is
++/// parsed, then copied one pass at a time to avoid retaining a second copy of the whole batch.
++#[cfg(feature = "glslang-in")]
++pub fn compile_request(request: &[u8]) -> Result<Vec<u8>, CompileWireError> {
++    let sources = parse_request(request)?;
++    let mut result = header(RESPONSE_MAGIC, sources.len());
++    for (pass, (vertex, fragment)) in sources.into_iter().enumerate() {
++        let source = ShaderSource {
++            vertex: vertex.to_owned(),
++            fragment: fragment.to_owned(),
++            name: None,
++            parameters: Default::default(),
++            format: Default::default(),
++        };
++        let compilation = Glslang::compile(&source)
++            .map_err(|source| CompileWireError::Compile { pass, source })?;
++        append_words(&mut result, &compilation.vertex)?;
++        append_words(&mut result, &compilation.fragment)?;
++    }
++    Ok(result)
++}
++
++/// Decode a complete response, checking counts, bounds, and each SPIR-V stage before use.
++pub fn decode_response(
++    response: &[u8],
++    expected_count: usize,
++) -> Result<Vec<SpirvCompilation>, CompileWireError> {
++    check_pass_count(expected_count)?;
++    let (mut reader, count) = Reader::message(response, RESPONSE_MAGIC)?;
++    if count != expected_count {
++        return Err(CompileWireError::UnexpectedCount {
++            expected: expected_count,
++            actual: count,
++        });
++    }
++    let mut result = Vec::with_capacity(count);
++    for pass in 0..count {
++        let vertex = reader.words()?;
++        validate_spirv(&vertex, pass, spirv::ExecutionModel::Vertex, "vertex")?;
++        let fragment = reader.words()?;
++        validate_spirv(&fragment, pass, spirv::ExecutionModel::Fragment, "fragment")?;
++        result.push(SpirvCompilation { vertex, fragment });
++    }
++    reader.finish()?;
++    Ok(result)
++}
++
++fn check_message_size(size: usize) -> Result<(), CompileWireError> {
++    if size > MAX_MESSAGE_BYTES {
++        Err(CompileWireError::MessageTooLarge)
++    } else {
++        Ok(())
++    }
++}
++
++fn check_pass_count(count: usize) -> Result<(), CompileWireError> {
++    if count > MAX_PASSES {
++        Err(CompileWireError::TooManyPasses)
++    } else {
++        Ok(())
++    }
++}
++
++fn header(magic: &[u8; 8], count: usize) -> Vec<u8> {
++    let mut result = Vec::with_capacity(HEADER_BYTES);
++    result.extend_from_slice(magic);
++    result.extend_from_slice(&PROTOCOL_VERSION.to_le_bytes());
++    result.extend_from_slice(&(count as u32).to_le_bytes());
++    result
++}
++
++fn check_append(current: usize, payload: usize) -> Result<(), CompileWireError> {
++    let size = current
++        .checked_add(4)
++        .and_then(|size| size.checked_add(payload))
++        .ok_or(CompileWireError::MessageTooLarge)?;
++    check_message_size(size)
++}
++
++fn append_field(result: &mut Vec<u8>, bytes: &[u8]) -> Result<(), CompileWireError> {
++    check_append(result.len(), bytes.len())?;
++    let length = u32::try_from(bytes.len()).map_err(|_| CompileWireError::MessageTooLarge)?;
++    result.extend_from_slice(&length.to_le_bytes());
++    result.extend_from_slice(bytes);
++    Ok(())
++}
++
++#[cfg(any(feature = "glslang-in", test))]
++fn append_words(result: &mut Vec<u8>, words: &[u32]) -> Result<(), CompileWireError> {
++    let bytes = words
++        .len()
++        .checked_mul(4)
++        .ok_or(CompileWireError::MessageTooLarge)?;
++    check_append(result.len(), bytes)?;
++    let length = u32::try_from(words.len()).map_err(|_| CompileWireError::MessageTooLarge)?;
++    result.extend_from_slice(&length.to_le_bytes());
++    for word in words {
++        result.extend_from_slice(&word.to_le_bytes());
++    }
++    Ok(())
++}
++
++#[cfg(any(feature = "glslang-in", test))]
++fn parse_request(request: &[u8]) -> Result<Vec<(&str, &str)>, CompileWireError> {
++    let (mut reader, count) = Reader::message(request, REQUEST_MAGIC)?;
++    let mut result = Vec::with_capacity(count);
++    for _ in 0..count {
++        let vertex = reader.source()?;
++        let fragment = reader.source()?;
++        result.push((vertex, fragment));
++    }
++    reader.finish()?;
++    Ok(result)
++}
++
++struct Reader<'a> {
++    remaining: &'a [u8],
++}
++
++impl<'a> Reader<'a> {
++    fn message(bytes: &'a [u8], magic: &[u8; 8]) -> Result<(Self, usize), CompileWireError> {
++        check_message_size(bytes.len())?;
++        let mut reader = Self { remaining: bytes };
++        if reader.take(8)? != magic {
++            return Err(CompileWireError::InvalidMagic);
++        }
++        let version = reader.u32()?;
++        if version != PROTOCOL_VERSION {
++            return Err(CompileWireError::UnsupportedVersion(version));
++        }
++        let count = reader.u32()? as usize;
++        check_pass_count(count)?;
++        Ok((reader, count))
++    }
++
++    fn take(&mut self, length: usize) -> Result<&'a [u8], CompileWireError> {
++        check_message_size(length)?;
++        if length > self.remaining.len() {
++            return Err(CompileWireError::Truncated);
++        }
++        let (result, rest) = self.remaining.split_at(length);
++        self.remaining = rest;
++        Ok(result)
++    }
++
++    fn u32(&mut self) -> Result<u32, CompileWireError> {
++        let bytes: [u8; 4] = self.take(4)?.try_into().unwrap();
++        Ok(u32::from_le_bytes(bytes))
++    }
++
++    #[cfg(any(feature = "glslang-in", test))]
++    fn source(&mut self) -> Result<&'a str, CompileWireError> {
++        let length = self.u32()? as usize;
++        std::str::from_utf8(self.take(length)?).map_err(|_| CompileWireError::InvalidUtf8)
++    }
++
++    fn words(&mut self) -> Result<Vec<u32>, CompileWireError> {
++        let length = self.u32()? as usize;
++        let bytes = length
++            .checked_mul(4)
++            .ok_or(CompileWireError::MessageTooLarge)?;
++        // Bound and validate the entire field before allocating from an untrusted length.
++        let bytes = self.take(bytes)?;
++        Ok(bytes
++            .chunks_exact(4)
++            .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
++            .collect())
++    }
++
++    fn finish(self) -> Result<(), CompileWireError> {
++        if self.remaining.is_empty() {
++            Ok(())
++        } else {
++            Err(CompileWireError::TrailingBytes)
++        }
++    }
++}
++
++fn validate_spirv(
++    words: &[u32],
++    pass: usize,
++    model: spirv::ExecutionModel,
++    stage: &'static str,
++) -> Result<(), CompileWireError> {
++    let invalid = |reason: String| CompileWireError::InvalidSpirv {
++        pass,
++        stage,
++        reason,
++    };
++    // Glslang is deliberately configured for SPIR-V 1.0. Reject swapped or future headers and
++    // impossible ID bounds before handing the word stream to the structural parser.
++    if words.len() < 5
++        || words[0] != 0x0723_0203
++        || words[1] != 0x0001_0000
++        || words[3] == 0
++        || words[3] > 0x003f_ffff
++        || words[4] != 0
++    {
++        return Err(invalid("incorrect SPIR-V 1.0 header".to_owned()));
++    }
++    let mut loader = rspirv::dr::Loader::new();
++    rspirv::binary::parse_words(words, &mut loader).map_err(|err| invalid(err.to_string()))?;
++    let module = loader.module();
++    if module.memory_model.is_none()
++        || module.functions.is_empty()
++        || !module.entry_points.iter().any(|entry| {
++            matches!(entry.operands.first(), Some(rspirv::dr::Operand::ExecutionModel(found)) if *found == model)
++        })
++    {
++        return Err(invalid("missing memory model, function, or stage entry point".to_owned()));
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use rspirv::binary::Assemble;
++
++    fn source(vertex: &str, fragment: &str) -> ShaderSource {
++        ShaderSource {
++            vertex: vertex.to_owned(),
++            fragment: fragment.to_owned(),
++            name: None,
++            parameters: Default::default(),
++            format: Default::default(),
++        }
++    }
++
++    fn minimal_spirv(model: spirv::ExecutionModel) -> Vec<u32> {
++        let mut builder = rspirv::dr::Builder::new();
++        builder.set_version(1, 0);
++        builder.capability(spirv::Capability::Shader);
++        builder.memory_model(spirv::AddressingModel::Logical, spirv::MemoryModel::GLSL450);
++        let void = builder.type_void();
++        let function_type = builder.type_function(void, []);
++        let function = builder
++            .begin_function(void, None, spirv::FunctionControl::NONE, function_type)
++            .unwrap();
++        builder.begin_block(None).unwrap();
++        builder.ret().unwrap();
++        builder.end_function().unwrap();
++        builder.entry_point(model, function, "main", []);
++        if model == spirv::ExecutionModel::Fragment {
++            builder.execution_mode(function, spirv::ExecutionMode::OriginUpperLeft, []);
++        }
++        builder.module().assemble()
++    }
++
++    fn response(vertex: &[u32], fragment: &[u32]) -> Vec<u8> {
++        let mut bytes = header(RESPONSE_MAGIC, 1);
++        append_words(&mut bytes, vertex).unwrap();
++        append_words(&mut bytes, fragment).unwrap();
++        bytes
++    }
++
++    #[test]
++    fn request_preserves_source_text_and_order() {
++        let sources = [source("vertex\n\0☃", "fragment\n"), source("", "second")];
++        let encoded = encode_request(&sources).unwrap();
++        assert_eq!(
++            parse_request(&encoded).unwrap(),
++            [("vertex\n\0☃", "fragment\n"), ("", "second")]
++        );
++        assert!(parse_request(&encode_request([]).unwrap())
++            .unwrap()
++            .is_empty());
++    }
++
++    #[test]
++    fn request_rejects_all_truncation_points_and_trailing_data() {
++        let mut bytes = encode_request([&source("vertex", "fragment")]).unwrap();
++        for end in 0..bytes.len() {
++            assert!(
++                parse_request(&bytes[..end]).is_err(),
++                "accepted prefix {end}"
++            );
++        }
++        bytes.push(0);
++        assert!(matches!(
++            parse_request(&bytes),
++            Err(CompileWireError::TrailingBytes)
++        ));
++    }
++
++    #[test]
++    fn framing_rejects_wrong_magic_version_counts_and_utf8() {
++        let bytes = encode_request([&source("v", "f")]).unwrap();
++        let mut bad = bytes.clone();
++        bad[0] ^= 1;
++        assert!(matches!(
++            parse_request(&bad),
++            Err(CompileWireError::InvalidMagic)
++        ));
++        let mut bad = bytes.clone();
++        bad[8..12].copy_from_slice(&2u32.to_le_bytes());
++        assert!(matches!(
++            parse_request(&bad),
++            Err(CompileWireError::UnsupportedVersion(2))
++        ));
++        let mut bad = bytes.clone();
++        bad[12..16].copy_from_slice(&((MAX_PASSES + 1) as u32).to_le_bytes());
++        assert!(matches!(
++            parse_request(&bad),
++            Err(CompileWireError::TooManyPasses)
++        ));
++        let mut bad = bytes;
++        bad[20] = 0xff;
++        assert!(matches!(
++            parse_request(&bad),
++            Err(CompileWireError::InvalidUtf8)
++        ));
++    }
++
++    #[test]
++    fn lengths_and_aggregate_size_are_checked_before_allocation() {
++        assert!(check_message_size(MAX_MESSAGE_BYTES).is_ok());
++        assert!(check_message_size(MAX_MESSAGE_BYTES + 1).is_err());
++        assert!(check_append(MAX_MESSAGE_BYTES - 4, 0).is_ok());
++        assert!(check_append(MAX_MESSAGE_BYTES - 4, 1).is_err());
++        assert!(check_append(usize::MAX, 1).is_err());
++        let input = source("", "");
++        assert!(encode_request(std::iter::repeat(&input).take(MAX_PASSES)).is_ok());
++        assert!(matches!(
++            encode_request(std::iter::repeat(&input).take(MAX_PASSES + 1)),
++            Err(CompileWireError::TooManyPasses)
++        ));
++        let mut request = header(REQUEST_MAGIC, 1);
++        request.extend_from_slice(&u32::MAX.to_le_bytes());
++        assert!(matches!(
++            parse_request(&request),
++            Err(CompileWireError::MessageTooLarge)
++        ));
++        let mut response = header(RESPONSE_MAGIC, 1);
++        response.extend_from_slice(&u32::MAX.to_le_bytes());
++        assert!(matches!(
++            decode_response(&response, 1),
++            Err(CompileWireError::MessageTooLarge)
++        ));
++    }
++
++    #[test]
++    fn response_preserves_words_and_checks_expected_count() {
++        let vertex = minimal_spirv(spirv::ExecutionModel::Vertex);
++        let fragment = minimal_spirv(spirv::ExecutionModel::Fragment);
++        let bytes = response(&vertex, &fragment);
++        let decoded = decode_response(&bytes, 1).unwrap();
++        assert_eq!(decoded[0].vertex, vertex);
++        assert_eq!(decoded[0].fragment, fragment);
++        assert!(matches!(
++            decode_response(&bytes, 2),
++            Err(CompileWireError::UnexpectedCount {
++                expected: 2,
++                actual: 1
++            })
++        ));
++        assert!(matches!(
++            decode_response(&bytes, MAX_PASSES + 1),
++            Err(CompileWireError::TooManyPasses)
++        ));
++        assert!(decode_response(&header(RESPONSE_MAGIC, 0), 0)
++            .unwrap()
++            .is_empty());
++    }
++
++    #[test]
++    fn response_rejects_truncation_trailing_data_and_invalid_spirv() {
++        let vertex = minimal_spirv(spirv::ExecutionModel::Vertex);
++        let fragment = minimal_spirv(spirv::ExecutionModel::Fragment);
++        let mut bytes = response(&vertex, &fragment);
++        for end in 0..bytes.len() {
++            assert!(
++                decode_response(&bytes[..end], 1).is_err(),
++                "accepted prefix {end}"
++            );
++        }
++        bytes.push(0);
++        assert!(matches!(
++            decode_response(&bytes, 1),
++            Err(CompileWireError::TrailingBytes)
++        ));
++        for words in [&[][..], &[0; 5][..], &vertex[..5], &fragment] {
++            assert!(matches!(
++                decode_response(&response(words, &fragment), 1),
++                Err(CompileWireError::InvalidSpirv { .. })
++            ));
++        }
++        let mut invalid = vertex;
++        invalid.push(0); // Zero instruction word count.
++        assert!(matches!(
++            decode_response(&response(&invalid, &fragment), 1),
++            Err(CompileWireError::InvalidSpirv { .. })
++        ));
++    }
++
++    #[cfg(feature = "glslang-in")]
++    #[test]
++    fn helper_compiles_with_the_same_linking_as_the_in_process_frontend() {
++        let sources = [source(
++            "#version 450\nlayout(location=0) out vec2 uv;\nvoid main(){uv=vec2(0.5);gl_Position=vec4(0,0,0,1);}",
++            "#version 450\nlayout(location=0) in vec2 uv;\nlayout(location=0) out vec4 color;\nvoid main(){color=vec4(uv,0,1);}",
++        )];
++        let direct = Glslang::compile(&sources[0]).unwrap();
++        let wire = compile_request(&encode_request(&sources).unwrap()).unwrap();
++        let decoded = decode_response(&wire, sources.len()).unwrap();
++        assert_eq!(decoded[0].vertex, direct.vertex);
++        assert_eq!(decoded[0].fragment, direct.fragment);
++    }
++}
+--- /dev/null
++++ b/librashader-reflect/src/bin/librashader-compiler.rs
+@@ -0,0 +1,31 @@
++//! Short-lived, GPU-independent GLSL compiler. Stdout is reserved for binary protocol output.
++
++use librashader_reflect::front::compile_wire::{compile_request, MAX_MESSAGE_BYTES};
++use std::io::{Read, Write};
++use std::process::ExitCode;
++
++fn run() -> Result<(), Box<dyn std::error::Error>> {
++    let mut request = Vec::new();
++    std::io::stdin()
++        .lock()
++        .take((MAX_MESSAGE_BYTES + 1) as u64)
++        .read_to_end(&mut request)?;
++    if request.len() > MAX_MESSAGE_BYTES {
++        return Err("compiler request exceeds the size limit".into());
++    }
++    let response = compile_request(&request)?;
++    let mut stdout = std::io::stdout().lock();
++    stdout.write_all(&response)?;
++    stdout.flush()?;
++    Ok(())
++}
++
++fn main() -> ExitCode {
++    match run() {
++        Ok(()) => ExitCode::SUCCESS,
++        Err(error) => {
++            eprintln!("librashader-compiler: {error}");
++            ExitCode::FAILURE
++        }
++    }
++}
+--- a/librashader-reflect/src/reflect/presets.rs
++++ b/librashader-reflect/src/reflect/presets.rs
+@@ -56,7 +56,30 @@
+         E: From<ShaderReflectError>,
+         E: From<ShaderCompileError>,
+     {
+-        compile_preset_passes::<Self, I, R, E>(passes, textures)
++        compile_preset_passes::<Self, I, R, E>(passes, textures, |source| {
++            Ok(I::Compiler::compile(source)?)
++        })
++    }
++
++    /// Reflect precompiled passes with the same preset semantics as normal compilation.
++    fn compile_preset_passes_with_compiler<'a, I, R, E>(
++        passes: impl IntoIterator<Item = PassResource>,
++        textures: impl Iterator<Item = &'a TextureMeta>,
++        compiler: impl FnMut(&ShaderSource) -> Result<I, E>,
++    ) -> Result<
++        (
++            Vec<ShaderPassArtifact<<Self as FromCompilation<I, R>>::Output>>,
++            ShaderSemantics,
++        ),
++        E,
++    >
++    where
++        I: ShaderReflectObject,
++        Self: Sized + FromCompilation<I, R>,
++        I::Compiler: ShaderInputCompiler<I>,
++        E: From<PreprocessError> + From<ShaderReflectError> + From<ShaderCompileError>,
++    {
++        compile_preset_passes::<Self, I, R, E>(passes, textures, compiler)
+     }
+ }
+ 
+@@ -65,6 +88,7 @@
+ fn compile_preset_passes<'a, T, I, R, E>(
+     passes: impl IntoIterator<Item = PassResource>,
+     textures: impl Iterator<Item = &'a TextureMeta>,
++    mut compiler: impl FnMut(&ShaderSource) -> Result<I, E>,
+ ) -> Result<
+     (
+         Vec<ShaderPassArtifact<<T as FromCompilation<I, R>>::Output>>,
+@@ -89,7 +113,7 @@
+         .into_iter()
+         .map(|shader| {
+             let source = &shader.data;
+-            let compiled = I::Compiler::compile(source)?;
++            let compiled = compiler(source)?;
+             let reflect = T::from_compilation(compiled)?;
+ 
+             for parameter in source.parameters.values() {
+--- a/librashader-runtime-mtl/Cargo.toml
++++ b/librashader-runtime-mtl/Cargo.toml
+@@ -14,6 +14,8 @@
+ # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ 
+ [dependencies]
++blake3 = "1.5.4"
++tempfile = "3"
+ image = { workspace = true }
+ librashader-common = { path = "../librashader-common", features = ["metal"], version = "0.12.0" }
+ librashader-presets = { path = "../librashader-presets", version = "0.12.0" }
+--- /dev/null
++++ b/librashader-runtime-mtl/src/compiler_process.rs
+@@ -0,0 +1,298 @@
++//! A short-lived GLSL frontend keeps glslang's process-lifetime caches out of
++//! the renderer. Only small owned SPIR-V responses survive in a bounded cache.
++use crate::error::{FilterChainError, Result};
++use librashader_pack::PassResource;
++use librashader_reflect::front::compile_wire::{
++    decode_response, encode_request, MAX_MESSAGE_BYTES,
++};
++use librashader_reflect::front::SpirvCompilation;
++use std::collections::VecDeque;
++use std::fs::{self, File};
++use std::io::{Read, Write};
++use std::os::unix::ffi::OsStrExt;
++use std::os::unix::fs::MetadataExt;
++use std::path::Path;
++use std::process::{Child, Command, Stdio};
++use std::sync::{Arc, Mutex, OnceLock};
++use std::time::{Duration, Instant, UNIX_EPOCH};
++
++const CACHE_BYTES: usize = 16 * 1024 * 1024;
++const CACHE_ENTRIES: usize = 32;
++const HELPER_TIMEOUT: Duration = Duration::from_secs(30);
++const STDERR_BYTES: u64 = 1024 * 1024;
++
++struct ResponseCache {
++    entries: VecDeque<([u8; 32], Arc<[u8]>)>,
++    bytes: usize,
++    max_bytes: usize,
++    max_entries: usize,
++}
++
++impl ResponseCache {
++    fn new(max_bytes: usize, max_entries: usize) -> Self {
++        Self {
++            entries: VecDeque::new(),
++            bytes: 0,
++            max_bytes,
++            max_entries,
++        }
++    }
++
++    fn get(&mut self, key: &[u8; 32]) -> Option<Arc<[u8]>> {
++        let index = self
++            .entries
++            .iter()
++            .position(|(candidate, _)| candidate == key)?;
++        let entry = self.entries.remove(index)?;
++        let value = Arc::clone(&entry.1);
++        self.entries.push_back(entry);
++        Some(value)
++    }
++
++    fn insert(&mut self, key: [u8; 32], response: Arc<[u8]>) {
++        if response.len() > self.max_bytes || self.max_entries == 0 {
++            return;
++        }
++        if let Some(index) = self
++            .entries
++            .iter()
++            .position(|(candidate, _)| *candidate == key)
++        {
++            self.bytes -= self.entries.remove(index).unwrap().1.len();
++        }
++        while self.entries.len() >= self.max_entries || self.bytes + response.len() > self.max_bytes
++        {
++            let (_, value) = self.entries.pop_front().unwrap();
++            self.bytes -= value.len();
++        }
++        self.bytes += response.len();
++        self.entries.push_back((key, response));
++    }
++}
++
++fn error(detail: impl std::fmt::Display) -> FilterChainError {
++    FilterChainError::CompilerHelper(detail.to_string())
++}
++
++/// A child is always terminated and reaped if spawning, polling or output handling
++/// exits early. Completed children are already reaped by `try_wait`.
++struct ChildGuard {
++    child: Child,
++    reaped: bool,
++}
++impl Drop for ChildGuard {
++    fn drop(&mut self) {
++        if !self.reaped {
++            let _ = self.child.kill();
++            let _ = self.child.wait();
++        }
++    }
++}
++
++fn wait_for_child(child: Child, timeout: Duration) -> Result<std::process::ExitStatus> {
++    let mut child = ChildGuard {
++        child,
++        reaped: false,
++    };
++    let deadline = Instant::now() + timeout;
++    loop {
++        if let Some(status) = child.child.try_wait().map_err(error)? {
++            child.reaped = true;
++            return Ok(status);
++        }
++        if Instant::now() >= deadline {
++            return Err(error(format!(
++                "Compilation exceeded {} seconds.",
++                timeout.as_secs()
++            )));
++        }
++        std::thread::sleep(Duration::from_millis(5));
++    }
++}
++
++fn run_helper(helper: &Path, request: &[u8], timeout: Duration) -> Result<Vec<u8>> {
++    let directory = tempfile::tempdir().map_err(error)?;
++    let input = directory.path().join("request.bin");
++    let output = directory.path().join("response.bin");
++    let diagnostic = directory.path().join("diagnostic.txt");
++    File::create(&input)
++        .and_then(|mut f| f.write_all(request))
++        .map_err(error)?;
++    // File-backed IPC cannot deadlock when a large request, response or diagnostic
++    // exceeds pipe capacity. Every file is removed when this invocation finishes.
++    let child = Command::new(helper)
++        .stdin(Stdio::from(File::open(&input).map_err(error)?))
++        .stdout(Stdio::from(File::create(&output).map_err(error)?))
++        .stderr(Stdio::from(File::create(&diagnostic).map_err(error)?))
++        .spawn()
++        .map_err(|e| error(format!("Could not launch {}: {e}", helper.display())))?;
++    let status = wait_for_child(child, timeout)?;
++    if !status.success() {
++        let mut message = Vec::new();
++        File::open(&diagnostic)
++            .map_err(error)?
++            .take(STDERR_BYTES)
++            .read_to_end(&mut message)
++            .map_err(error)?;
++        let message = String::from_utf8_lossy(&message);
++        return Err(error(if message.trim().is_empty() {
++            format!("Compiler exited with {status}.")
++        } else {
++            message.into_owned()
++        }));
++    }
++    let size = fs::metadata(&output).map_err(error)?.len();
++    if size > MAX_MESSAGE_BYTES as u64 {
++        return Err(error("Compiler response exceeds the protocol size limit."));
++    }
++    fs::read(output).map_err(error)
++}
++
++fn cache_key(helper: &Path, request: &[u8]) -> Result<[u8; 32]> {
++    // Replacing the helper invalidates old responses even if shader text is unchanged.
++    // The versioned wire request includes every preprocessed stage, so changed includes
++    // and compiler protocol revisions cannot accidentally reuse old SPIR-V.
++    let metadata = fs::metadata(helper)
++        .map_err(|e| error(format!("Missing compiler {}: {e}", helper.display())))?;
++    let modified = metadata
++        .modified()
++        .map_err(error)?
++        .duration_since(UNIX_EPOCH)
++        .map_err(error)?;
++    let mut hash = blake3::Hasher::new();
++    hash.update(b"ScreenSlanger compiler cache 1\0");
++    hash.update(helper.as_os_str().as_bytes());
++    hash.update(&metadata.len().to_le_bytes());
++    hash.update(&metadata.dev().to_le_bytes());
++    hash.update(&metadata.ino().to_le_bytes());
++    hash.update(&metadata.ctime().to_le_bytes());
++    hash.update(&metadata.ctime_nsec().to_le_bytes());
++    hash.update(&modified.as_nanos().to_le_bytes());
++    hash.update(&request);
++    Ok(*hash.finalize().as_bytes())
++}
++
++pub(crate) fn compile(passes: &[PassResource], helper: &Path) -> Result<Vec<SpirvCompilation>> {
++    let request = encode_request(passes.iter().map(|pass| &pass.data)).map_err(error)?;
++    let key = cache_key(helper, &request)?;
++    static CACHE: OnceLock<Mutex<ResponseCache>> = OnceLock::new();
++    let cache = CACHE.get_or_init(|| Mutex::new(ResponseCache::new(CACHE_BYTES, CACHE_ENTRIES)));
++    let cached = { cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) };
++    if let Some(response) = cached {
++        return decode_response(&response, passes.len()).map_err(error);
++    }
++    // At most one uncached compiler process runs per app. A second display waits
++    // for the first to populate the shared immutable response instead of duplicating
++    // the frontend's temporary working set. This never runs on the UI thread.
++    static COMPILE_GATE: Mutex<()> = Mutex::new(());
++    let _gate = COMPILE_GATE.lock().unwrap_or_else(|e| e.into_inner());
++    let cached = { cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) };
++    if let Some(response) = cached {
++        return decode_response(&response, passes.len()).map_err(error);
++    }
++    let response = run_helper(helper, &request, HELPER_TIMEOUT)?;
++    let compiled = decode_response(&response, passes.len()).map_err(error)?;
++    // Failed processes and malformed responses never enter the cache.
++    cache
++        .lock()
++        .unwrap_or_else(|e| e.into_inner())
++        .insert(key, Arc::from(response));
++    Ok(compiled)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn cache_evicts_by_count_and_refreshes_recency() {
++        let mut cache = ResponseCache::new(1024, 2);
++        cache.insert([1; 32], Arc::from([1u8]));
++        cache.insert([2; 32], Arc::from([2u8]));
++        assert!(cache.get(&[1; 32]).is_some());
++        cache.insert([3; 32], Arc::from([3u8]));
++        assert!(cache.get(&[2; 32]).is_none());
++        assert_eq!(cache.entries.len(), 2);
++        assert_eq!(cache.bytes, 2);
++    }
++
++    #[test]
++    fn cache_enforces_byte_limit_and_does_not_retain_oversized_results() {
++        let mut cache = ResponseCache::new(5, 32);
++        cache.insert([1; 32], Arc::from([0u8; 3]));
++        cache.insert([2; 32], Arc::from([0u8; 3]));
++        assert!(cache.get(&[1; 32]).is_none());
++        let oversized: Arc<[u8]> = Arc::from([0u8; 6]);
++        let weak = Arc::downgrade(&oversized);
++        cache.insert([3; 32], oversized);
++        assert!(weak.upgrade().is_none());
++        assert_eq!(cache.bytes, 3);
++        assert_eq!(cache.entries.len(), 1);
++    }
++
++    #[test]
++    fn replacing_entry_releases_previous_response() {
++        let mut cache = ResponseCache::new(10, 3);
++        let original: Arc<[u8]> = Arc::from([1u8; 4]);
++        let weak = Arc::downgrade(&original);
++        cache.insert([1; 32], original);
++        cache.insert([1; 32], Arc::from([2u8; 2]));
++        assert!(weak.upgrade().is_none());
++        assert_eq!(cache.bytes, 2);
++        assert_eq!(cache.entries.len(), 1);
++    }
++
++    #[test]
++    fn cache_key_changes_with_source_or_helper_replacement() {
++        let directory = tempfile::tempdir().unwrap();
++        let helper = directory.path().join("helper");
++        fs::write(&helper, b"first").unwrap();
++        let first = cache_key(&helper, b"vertex+fragment+included-source").unwrap();
++        assert_ne!(
++            first,
++            cache_key(&helper, b"vertex+fragment+edited-include").unwrap()
++        );
++        let replacement = directory.path().join("replacement");
++        fs::write(&replacement, b"other").unwrap();
++        fs::rename(replacement, &helper).unwrap();
++        assert_ne!(
++            first,
++            cache_key(&helper, b"vertex+fragment+included-source").unwrap()
++        );
++    }
++
++    #[test]
++    fn successful_process_with_malformed_response_is_rejected() {
++        let response =
++            run_helper(Path::new("/usr/bin/true"), b"input", Duration::from_secs(1)).unwrap();
++        assert!(decode_response(&response, 1).is_err());
++    }
++
++    #[test]
++    fn missing_helper_reports_launch_error() {
++        assert!(run_helper(
++            Path::new("/does/not/exist/librashader-compiler"),
++            b"",
++            Duration::from_secs(1)
++        )
++        .is_err());
++    }
++
++    #[test]
++    fn timeout_terminates_and_reaps_child() {
++        let start = Instant::now();
++        // Use the system sleep utility for a deterministic long-running child
++        // without introducing a test shell script.
++        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
++        let pid = child.id();
++        assert!(wait_for_child(child, Duration::from_millis(20)).is_err());
++        assert!(start.elapsed() < Duration::from_secs(5));
++        // wait() in Drop reaps it; a process with this PID is no longer waitable.
++        let output = Command::new("/bin/ps")
++            .arg("-p")
++            .arg(pid.to_string())
++            .output()
++            .unwrap();
++        assert!(!output.status.success());
++    }
++}
+--- a/librashader-runtime-mtl/src/error.rs
++++ b/librashader-runtime-mtl/src/error.rs
+@@ -36,6 +36,8 @@
+     FailedToCreateTexture,
+     #[error("couldn't create command buffer")]
+     FailedToCreateCommandBuffer,
++    #[error("external shader compiler: {0}")]
++    CompilerHelper(String),
+     #[error("unreachable")]
+     Infallible(#[from] std::convert::Infallible),
+ }
+--- a/librashader-runtime-mtl/src/filter_chain.rs
++++ b/librashader-runtime-mtl/src/filter_chain.rs
+@@ -54,7 +54,20 @@
+     pub fn compile_passes<'a>(
+         shaders: Vec<PassResource>,
+         textures: impl Iterator<Item = &'a TextureMeta>,
++        helper: Option<&Path>,
+     ) -> Result<(Vec<ShaderPassMeta>, ShaderSemantics), FilterChainError> {
++        if let Some(helper) = helper {
++            let mut compiled = crate::compiler_process::compile(&shaders, helper)?.into_iter();
++            return MSL::compile_preset_passes_with_compiler::<
++                SpirvCompilation,
++                SpirvCross,
++                FilterChainError,
++            >(shaders, textures, |_| {
++                compiled
++                    .next()
++                    .ok_or_else(|| FilterChainError::CompilerHelper("missing compiled pass".into()))
++            });
++        }
+         let (passes, semantics) =
+             MSL::compile_preset_passes::<SpirvCompilation, SpirvCross, FilterChainError>(
+                 shaders, textures,
+@@ -149,6 +162,32 @@
+         Ok(chain)
+     }
+ 
++    /// Create a Metal chain using a short-lived GLSL compiler process. No glslang
++    /// compiler instance is initialized in this process on this path.
++    pub fn load_from_preset_with_compiler(
++        mut preset: ShaderPreset,
++        queue: &ProtocolObject<dyn MTLCommandQueue>,
++        options: Option<&FilterChainOptionsMetal>,
++        helper: &Path,
++    ) -> error::Result<FilterChainMetal> {
++        let textures = std::mem::take(&mut preset.textures);
++        let preset = ShaderPresetPack::load_from_preset_serial::<FilterChainError>(preset)?;
++        let cmd = queue
++            .commandBuffer()
++            .ok_or(FilterChainError::FailedToCreateCommandBuffer)?;
++        let chain = Self::load_from_pack_deferred_internal(
++            preset,
++            queue.device(),
++            &cmd,
++            options,
++            Some(textures),
++            Some(helper),
++        )?;
++        cmd.commit();
++        cmd.waitUntilCompleted();
++        Ok(chain)
++    }
++
+     /// Load a filter chain from a pre-parsed `ShaderPreset`.
+     pub fn load_from_pack(
+         preset: ShaderPresetPack,
+@@ -159,8 +198,14 @@
+             .commandBuffer()
+             .ok_or(FilterChainError::FailedToCreateCommandBuffer)?;
+ 
+-        let filter_chain =
+-            Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options, None)?;
++        let filter_chain = Self::load_from_pack_deferred_internal(
++            preset,
++            queue.device(),
++            &cmd,
++            options,
++            None,
++            None,
++        )?;
+ 
+         cmd.commit();
+         cmd.waitUntilCompleted();
+@@ -214,7 +259,7 @@
+         let filters: Vec<error::Result<FilterPass>> = passes
+             .into_iter()
+             .enumerate()
+-            .map(|(index, (config, mut reflect))| {
++            .map(|(index, (mut config, mut reflect))| {
+                 let reflection = reflect.reflect(index, semantics)?;
+                 let msl = reflect.compile(Some(MslVersion::new(2, 0, 0)))?;
+ 
+@@ -248,6 +293,10 @@
+                     },
+                 )?;
+ 
++                // Render passes only use parameters and format after compilation.
++                // Release large preprocessed GLSL strings instead of retaining capacity.
++                config.data.vertex = String::new();
++                config.data.fragment = String::new();
+                 Ok(FilterPass {
+                     reflection,
+                     uniform_storage,
+@@ -319,7 +368,14 @@
+     ) -> error::Result<FilterChainMetal> {
+         let textures = std::mem::take(&mut preset.textures);
+         let preset = ShaderPresetPack::load_from_preset::<FilterChainError>(preset)?;
+-        Self::load_from_pack_deferred_internal(preset, queue.device(), cmd, options, Some(textures))
++        Self::load_from_pack_deferred_internal(
++            preset,
++            queue.device(),
++            cmd,
++            options,
++            Some(textures),
++            None,
++        )
+     }
+ 
+     /// Load a filter chain from a pre-parsed `ShaderPreset`, deferring and GPU-side initialization
+@@ -335,7 +391,7 @@
+         cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+         options: Option<&FilterChainOptionsMetal>,
+     ) -> error::Result<FilterChainMetal> {
+-        Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options, None)
++        Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options, None, None)
+     }
+ 
+     /// Load a filter chain from a pre-parsed `ShaderPreset`, deferring and GPU-side initialization
+@@ -351,13 +407,14 @@
+         cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+         options: Option<&FilterChainOptionsMetal>,
+         texture_paths: Option<Vec<TextureConfig>>,
++        helper: Option<&Path>,
+     ) -> error::Result<FilterChainMetal> {
+         let config = RuntimeParameters::new(&preset);
+         let textures = match texture_paths {
+             Some(paths) => LutSources::Files(paths),
+             None => LutSources::Packed(preset.textures),
+         };
+-        let (passes, semantics) = compile_passes(preset.passes, textures.metadata())?;
++        let (passes, semantics) = compile_passes(preset.passes, textures.metadata(), helper)?;
+ 
+         let filters = Self::init_passes(&device, passes, &semantics)?;
+ 
+--- a/librashader-runtime-mtl/src/lib.rs
++++ b/librashader-runtime-mtl/src/lib.rs
+@@ -7,6 +7,7 @@
+ #![cfg_attr(feature = "nightly", feature(type_alias_impl_trait))]
+ 
+ mod buffer;
++mod compiler_process;
+ mod draw_quad;
+ mod filter_chain;
+ mod filter_pass;

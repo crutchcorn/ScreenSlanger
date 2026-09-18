@@ -85,7 +85,7 @@ final class SharedMetalResources {
     let queue = self.commandQueue
     let loaded = try await withTaskCancellationHandler {
       try await Task.detached(priority: .userInitiated) {
-        try build(request, device, queue, token)
+        try autoreleasepool { try build(request, device, queue, token) }
       }.value
     } onCancel: {
       token.cancel()

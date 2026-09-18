@@ -38,9 +38,9 @@ rustup toolchain install 1.93.0 --profile minimal
 
 This downloads [Slang 2026.18](https://github.com/shader-slang/slang/releases/tag/v2026.18) and checks its SHA-256 checksum. Slang is installed into `~/Library/Application Support/ScreenSlanger/Tools/slang/2026.18`, with a `current` symlink that ScreenSlanger discovers automatically. The full Slang distribution is needed, including its libraries. Existing installations under `~/slang` are preserved.
 
-The script also builds **librashader 0.12.0-screenslanger.2** from the checksum-verified [upstream 0.12.0 source](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0), with reviewed patches that avoid unused final-pass targets, store grayscale lookup textures more compactly, and decode and upload Metal textures one at a time. Grayscale uploads use bounded staging memory while preserving sampled values, and color and 16-bit images retain their original conversion behavior. It uses Rust 1.93.0, pinned Cargo dependencies, and an optimized Metal-only build. Setup downloads Cargo dependencies and compiles the runtime once, installing it into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.2` without replacing existing official or previous local runtime installations.
+The script also builds **librashader 0.12.0-screenslanger.3** from the checksum-verified [upstream 0.12.0 source](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0), with reviewed patches that avoid unused final-pass targets, store grayscale lookup textures more compactly, and decode and upload Metal textures one at a time. Grayscale uploads use bounded staging memory while preserving sampled values, and color and 16-bit images retain their original conversion behavior. A bundled `librashader-compiler` helper compiles GLSL in a separate, short-lived process so its compiler state is released after loading. Setup uses Rust 1.93.0, pinned Cargo dependencies, and optimized builds. It downloads Cargo dependencies and builds the Metal runtime and helper once, installing both into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.3` without replacing existing official or previous local runtime installations.
 
-This runtime handles RetroArch presets, including multiple passes, custom vertex stages, reflected uniforms, textures, and filtering. Its compiler is built in, so Homebrew, `glslang`, and `spirv-cross` are not required. The app includes the MPL-2.0 license, original source archive, exact patches, checksums, and rebuild instructions. The vendored C header's origin and the runtime's build and update procedures are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
+This runtime handles RetroArch presets, including multiple passes, custom vertex stages, reflected uniforms, textures, and filtering. The app includes the runtime and compiler helper, so Homebrew, `glslang`, and `spirv-cross` are not required. It also includes the MPL-2.0 license, original source archive, exact patches, checksums, and rebuild instructions. The vendored C header's origin and the runtime's build and update procedures are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The **Bundle Shader Runtimes** build phase verifies the installed runtime, copies the pinned tools, licenses, and corresponding source into the app, and signs the nested executables and libraries before Xcode signs the app. Xcode builds never download tools or compile Rust. There are no Swift packages to resolve.
 
@@ -49,7 +49,7 @@ Run the setup script again after pulling project updates. The Slang and librasha
 | Dependency | Version | Purpose |
 | --- | --- | --- |
 | [Slang](https://github.com/shader-slang/slang/releases/tag/v2026.18) | 2026.18 | Native Slang effects |
-| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.2 | Patched RetroArch Metal rendering runtime |
+| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.3 | RetroArch Metal runtime and compiler helper |
 | [Rust](https://www.rust-lang.org/) | 1.93.0 | Build-time compiler for librashader; not required to run the app |
 
 To inspect installed versions:
@@ -58,7 +58,7 @@ To inspect installed versions:
 "$HOME/Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc" -version
 ```
 
-Unhosted tests and development probes can override their tools with `SLANG_PATH` and `LIBRASHADER_PATH`. The application uses its bundled tools; an incomplete app reports an error instead of depending on the recipient's development environment.
+Unhosted tests and development probes can override their tools with `SLANG_PATH`, `LIBRASHADER_PATH`, and `LIBRASHADER_COMPILER_PATH`. Without a compiler override, they look for `librashader-compiler` beside the selected librashader runtime. The application always uses its bundled runtime and helper, ignoring those environment overrides. An incomplete app reports an error instead of depending on the recipient's development environment or retaining an in-process GLSL compiler.
 
 Run the native Swift Testing suite after updating the compilers. In Xcode, use **Product → Test** (⌘U), or run:
 

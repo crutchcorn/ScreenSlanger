@@ -11,18 +11,19 @@ set -euo pipefail
 : "${TARGET_TEMP_DIR:?This script is an Xcode build phase.}"
 
 slang_version="2026.18"
-librashader_version="0.12.0-screenslanger.2"
+librashader_version="0.12.0-screenslanger.3"
 tools_directory="$HOME/Library/Application Support/ScreenSlanger/Tools"
 slang_source="$tools_directory/slang/$slang_version"
 librashader_directory="$tools_directory/librashader/$librashader_version"
 librashader_source="$librashader_directory/librashader.dylib"
+librashader_compiler_source="$librashader_directory/librashader-compiler"
 
-if [[ ! -x "$slang_source/bin/slangc" || ! -f "$librashader_source" ]]; then
+if [[ ! -x "$slang_source/bin/slangc" || ! -f "$librashader_source" || ! -x "$librashader_compiler_source" ]]; then
     echo "error: Shader dependencies are missing. Run scripts/setup-dependencies.sh from the checkout, then build again." >&2
     exit 1
 fi
 
-# Validate the installed library before changing its install name or signing it.
+# Validate both installed binaries before changing install names or signing them.
 # Source hashes remain valid in the app; the installation's binary hash does not.
 (
     cd "$librashader_directory"
@@ -34,8 +35,9 @@ package_staging="$TARGET_TEMP_DIR/ShaderRuntimes"
 slang_bundle="$package_staging/Slang.app"
 slang_destination="$slang_bundle/Contents"
 frameworks_destination="$package_staging/Frameworks"
+helpers_destination="$package_staging/Helpers"
 notices_destination="$package_staging/ThirdParty"
-mkdir -p "$slang_destination/MacOS" "$slang_destination/lib" "$frameworks_destination" "$notices_destination/Slang" "$notices_destination/librashader"
+mkdir -p "$slang_destination/MacOS" "$slang_destination/lib" "$frameworks_destination" "$helpers_destination" "$notices_destination/Slang" "$notices_destination/librashader"
 
 # Keep Slang's executable/../lib relationship intact for dynamically loaded backends.
 # A nested helper .app gives code signing a valid bundle boundary around its data modules.
@@ -44,6 +46,7 @@ rsync -a --delete "$slang_source/bin/slangc" "$slang_destination/MacOS/"
 cp "$SRCROOT/scripts/Slang-Info.plist" "$slang_destination/Info.plist"
 rsync -a --delete --exclude cmake --exclude pkgconfig "$slang_source/lib/" "$slang_destination/lib/"
 cp "$librashader_source" "$frameworks_destination/librashader.dylib"
+cp "$librashader_compiler_source" "$helpers_destination/librashader-compiler"
 cp "$slang_source/LICENSE" "$notices_destination/Slang/LICENSE"
 rsync -a --delete "$slang_source/LICENSES/" "$notices_destination/Slang/LICENSES/"
 cp "$SRCROOT/Vendor/CLibrashader/LICENSE-MPL-2.0.md" "$notices_destination/librashader/LICENSE-MPL-2.0.md"
@@ -52,6 +55,7 @@ cp "$SRCROOT/Vendor/CLibrashader/BUILDING.md" "$notices_destination/librashader/
 for source_file in librashader-v0.12.0-source.tar.gz \
     0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch \
     0003-stream-metal-lut-loading.patch \
+    0004-isolate-retroarch-compiler.patch \
     BUILD-INFO.txt SHA256SUMS; do
     cp "$librashader_directory/$source_file" "$notices_destination/librashader/$source_file"
 done
@@ -110,16 +114,19 @@ fi
 # This library is loaded by absolute bundle path, but give it a relocatable identity too.
 /usr/bin/install_name_tool -id '@rpath/librashader.dylib' "$frameworks_destination/librashader.dylib"
 prepare_binary "$frameworks_destination/librashader.dylib"
+prepare_binary "$helpers_destination/librashader-compiler"
 
 # Xcode permits only exact declared output paths, even for directories. Signing and
 # rsync's temporary work happen in TARGET_TEMP_DIR; final copies write declared files
 # in place so the build phase can keep user-script sandboxing enabled.
 final_slang="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers/Slang.app"
+final_helpers="$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH/Helpers"
 final_frameworks="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH"
 final_notices="$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/ThirdParty"
 mkdir -p "$final_slang" "$final_frameworks" "$final_notices"
 rsync -a --inplace "$slang_bundle/" "$final_slang/"
 cp "$frameworks_destination/librashader.dylib" "$final_frameworks/librashader.dylib"
+cp "$helpers_destination/librashader-compiler" "$final_helpers/librashader-compiler"
 rsync -a --inplace "$notices_destination/" "$final_notices/"
 
 echo "Bundled Slang $slang_version and librashader $librashader_version into the application."
