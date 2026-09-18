@@ -208,6 +208,10 @@ struct ShaderTests {
                 255, 255, 255, 255, 255, 0, 0, 255,
                 0, 255, 0, 255, 0, 0, 255, 255,
             ])
+            try expectPixels(render(scissor: MTLScissorRect(x: 1, y: 0, width: 1, height: 2)), expected: [
+                0, 0, 0, 0, 255, 0, 0, 255,
+                0, 0, 0, 0, 0, 0, 255, 255,
+            ])
         }
     }
 
@@ -228,6 +232,8 @@ struct ShaderTests {
         scale0 = 2.0
         shader1 = "second.slang"
         filter_linear1 = false
+        scale_type1 = "viewport"
+        scale1 = 1.0
         """.write(to: preset, atomically: true, encoding: .utf8)
         let shared = SharedMetalResources.shared
         defer { shared.clear() }
@@ -235,6 +241,10 @@ struct ShaderTests {
         try expectPixels(render(), expected: [
             128, 0, 0, 255, 0, 128, 0, 255,
             0, 0, 128, 255, 128, 128, 128, 255,
+        ])
+        try expectPixels(render(scissor: MTLScissorRect(x: 1, y: 0, width: 1, height: 2)), expected: [
+            0, 0, 0, 0, 0, 128, 0, 255,
+            0, 0, 0, 0, 128, 128, 128, 255,
         ])
     }
 
@@ -335,6 +345,64 @@ struct ShaderTests {
         try expectPixels(render(scissor: scissor), expected: expected)
         try await withRetroArchShader(retroArchSource(fragment: "texture(Source, vTexCoord)")) { _ in
             try expectPixels(render(scissor: scissor), expected: expected)
+        }
+    }
+
+    @Test("RetroArch masks every desktop edge without rescaling pixels or changing their alpha")
+    func desktopMaskEdges() async throws {
+        // Different colors and alpha across sixteen texels expose UV rescaling,
+        // blending, stale edges, and accidentally clearing visible pixels.
+        var pixels: [UInt8] = []
+        for index in 0..<16 {
+            pixels.append(UInt8(index * 11))
+            pixels.append(UInt8(255 - index * 9))
+            pixels.append(UInt8(index * 7))
+            pixels.append(UInt8(40 + index * 12))
+        }
+        let scissors = [
+            MTLScissorRect(x: 0, y: 0, width: 4, height: 4),
+            MTLScissorRect(x: 1, y: 1, width: 2, height: 2),
+            MTLScissorRect(x: 0, y: 1, width: 4, height: 2),
+            MTLScissorRect(x: 1, y: 0, width: 2, height: 4),
+            MTLScissorRect(x: 0, y: 0, width: 1, height: 1),
+            MTLScissorRect(x: 3, y: 3, width: 1, height: 1),
+            MTLScissorRect(x: 2, y: 1, width: 0, height: 2),
+            MTLScissorRect(x: 1, y: 2, width: 2, height: 0),
+        ]
+        try await withRetroArchShader(retroArchSource(fragment: "texture(Source, vTexCoord)")) { shared in
+            let source = try makeTexture(pixels: pixels, width: 4, height: 4)
+            let destination = try makeTexture(width: 4, height: 4)
+            let core = ShaderRenderCore(resources: shared)
+            for scissor in scissors {
+                let commands = try #require(shared.commandQueue.makeCommandBuffer())
+                try core.encode(commandBuffer: commands, source: source, destination: destination,
+                                context: ShaderFrameContext(outputSize: SIMD2(4, 4)), scissor: scissor)
+                let expected = (0..<16).flatMap { index -> [UInt8] in
+                    let x = index % 4, y = index / 4
+                    let visible = (scissor.x..<(scissor.x + scissor.width)).contains(x)
+                        && (scissor.y..<(scissor.y + scissor.height)).contains(y)
+                    return visible ? Array(pixels[(index * 4)..<(index * 4 + 4)]) : [0, 0, 0, 0]
+                }
+                try expectPixels(finishRendering(commands, to: destination), expected: expected)
+            }
+        }
+    }
+
+    @Test("Desktop masking leaves complete final-pass feedback available on the next frame")
+    func desktopMaskPreservesFeedback() async throws {
+        let source = retroArchSource(
+            fragment: "global.FrameCount == 0u ? texture(Source, vTexCoord) : texture(PassFeedback0, vTexCoord)",
+            uniforms: "layout(set = 0, binding = 0) uniform Global { mat4 MVP; uint FrameCount; } global;",
+            fragmentDeclarations: "layout(set = 0, binding = 3) uniform sampler2D PassFeedback0;")
+        for scissor in [MTLScissorRect(x: 1, y: 0, width: 1, height: 2),
+                        MTLScissorRect(x: 0, y: 0, width: 0, height: 0)] {
+            try await withRetroArchShader(source) { _ in
+                _ = try render(scissor: scissor)
+                try expectPixels(render(
+                    context: ShaderFrameContext(outputSize: SIMD2(2, 2), frameCount: 1),
+                    scissor: MTLScissorRect(x: 0, y: 0, width: 2, height: 2),
+                    pixels: solidPixel([0, 0, 0, 0])), expected: inputPixels)
+            }
         }
     }
 
@@ -611,17 +679,17 @@ struct ShaderTests {
         return try finishRendering(commands, to: destination)
     }
 
-    private func makeTexture(pixels: [UInt8]? = nil) throws -> MTLTexture {
+    private func makeTexture(pixels: [UInt8]? = nil, width: Int = 2, height: Int = 2) throws -> MTLTexture {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: .bgra8Unorm, width: 2, height: 2, mipmapped: false)
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false)
         descriptor.storageMode = .shared
         descriptor.usage = [.shaderRead, .renderTarget]
         let texture = try #require(SharedMetalResources.shared.device.makeTexture(descriptor: descriptor))
         if let pixels {
-            try #require(pixels.count == 16)
+            try #require(pixels.count == width * height * 4)
             pixels.withUnsafeBytes { bytes in
-                texture.replace(region: MTLRegionMake2D(0, 0, 2, 2), mipmapLevel: 0,
-                                withBytes: bytes.baseAddress!, bytesPerRow: 8)
+                texture.replace(region: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0,
+                                withBytes: bytes.baseAddress!, bytesPerRow: width * 4)
             }
         }
         return texture
@@ -631,10 +699,10 @@ struct ShaderTests {
         commands.commit()
         commands.waitUntilCompleted()
         if let error = commands.error { throw error }
-        var output = [UInt8](repeating: 0, count: 16)
+        var output = [UInt8](repeating: 0, count: destination.width * destination.height * 4)
         output.withUnsafeMutableBytes { bytes in
-            destination.getBytes(bytes.baseAddress!, bytesPerRow: 8,
-                                 from: MTLRegionMake2D(0, 0, 2, 2), mipmapLevel: 0)
+            destination.getBytes(bytes.baseAddress!, bytesPerRow: destination.width * 4,
+                                 from: MTLRegionMake2D(0, 0, destination.width, destination.height), mipmapLevel: 0)
         }
         return output
     }

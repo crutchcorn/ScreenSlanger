@@ -20,7 +20,7 @@ struct CompiledEffect: Sendable {
   let id = UUID()
   let backend: Backend
   let parameters: [ShaderParameter]
-  var compositor: (any MTLRenderPipelineState)? = nil
+  var desktopMaskPipeline: (any MTLRenderPipelineState)? = nil
 }
 
 struct ShaderLoadRequest: Sendable {
@@ -123,30 +123,28 @@ final class SharedMetalResources {
       try cancellation.checkCancellation()
       return CompiledEffect(backend: .retroArch(chains),
                             parameters: chains.values.first?.parameters ?? [],
-                            compositor: try makeCompositor(device: device))
+                            desktopMaskPipeline: try makeDesktopMaskPipeline(device: device))
     }
     let pipeline = try MetalRenderer.buildRenderPipeline(
       device: device, effectSource: source, sourceURL: request.url, cancellation: cancellation)
     try cancellation.checkCancellation()
     return CompiledEffect(backend: .slang(pipeline), parameters: [])
   }
-  nonisolated private static func makeCompositor(device: MTLDevice) throws -> MTLRenderPipelineState {
+  nonisolated private static func makeDesktopMaskPipeline(device: MTLDevice) throws -> MTLRenderPipelineState {
     let library = try device.makeLibrary(source: """
       #include <metal_stdlib>
       using namespace metal;
-      struct Quad { float4 position [[position]]; float2 uv; };
-      vertex Quad screenVertex(uint id [[vertex_id]]) {
+      vertex float4 screenVertex(uint id [[vertex_id]]) {
         float2 p[3] = {float2(-1,-1),float2(3,-1),float2(-1,3)};
-        return {float4(p[id],0,1),float2((p[id].x+1)*0.5,(1-p[id].y)*0.5)};
+        return float4(p[id],0,1);
       }
-      fragment float4 screenCopy(Quad v [[stage_in]], texture2d<float> image [[texture(0)]]) {
-        constexpr sampler nearest(coord::normalized,filter::nearest,address::clamp_to_edge);
-        return image.sample(nearest,v.uv);
+      fragment float4 transparentPixel() {
+        return float4(0);
       }
       """, options: nil)
     let descriptor = MTLRenderPipelineDescriptor()
     descriptor.vertexFunction = library.makeFunction(name: "screenVertex")
-    descriptor.fragmentFunction = library.makeFunction(name: "screenCopy")
+    descriptor.fragmentFunction = library.makeFunction(name: "transparentPixel")
     descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
     return try device.makeRenderPipelineState(descriptor: descriptor)
   }
@@ -437,7 +435,6 @@ enum ShaderRenderError: Error, LocalizedError {
 final class ShaderRenderCore {
   let resources: SharedMetalResources
   let displayID: UInt32
-  private var intermediate: MTLTexture?
 
   init(resources: SharedMetalResources = .shared, displayID: UInt32 = 0) {
     self.resources = resources
@@ -452,41 +449,21 @@ final class ShaderRenderCore {
     switch effect.backend {
     case .retroArch(let chains):
       guard let chain = chains[displayID] else { throw ShaderRenderError.missingDisplayChain }
-      let output: MTLTexture
-      if scissor != nil {
-        if intermediate?.width != destination.width || intermediate?.height != destination.height {
-          let descriptor = MTLTextureDescriptor.texture2DDescriptor(
-            pixelFormat: destination.pixelFormat, width: destination.width,
-            height: destination.height, mipmapped: false)
-          descriptor.storageMode = .private
-          descriptor.usage = [.shaderRead, .renderTarget]
-          intermediate = resources.device.makeTexture(descriptor: descriptor)
-        }
-        guard let intermediate else { throw ShaderRenderError.encoderUnavailable }
-        output = intermediate
-      } else {
-        output = destination
-      }
-      try chain.encode(commandBuffer: commandBuffer, input: source, output: output,
+      // Preserve full-size shader coordinates and history. A librashader viewport
+      // would resize the image instead of just excluding the menu bar and Dock.
+      try chain.encode(commandBuffer: commandBuffer, input: source, output: destination,
                        frameCount: UInt(context.frameCount), framesPerSecond: context.framesPerSecond,
                        frameTimeMilliseconds: context.frameTimeMilliseconds,
                        parameterValues: resources.parameterState.values)
       commandBuffer.addCompletedHandler { _ in withExtendedLifetime(chain) {} }
-      if let scissor, let compositor = effect.compositor {
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = destination
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+      if let scissor, let pipeline = effect.desktopMaskPipeline {
+        do {
+          try maskDesktopEdges(commandBuffer: commandBuffer, destination: destination,
+                               visible: scissor, pipeline: pipeline)
+        } catch {
           chain.discardUnsubmittedFrame(commandBuffer: commandBuffer)
-          throw ShaderRenderError.encoderUnavailable
+          throw error
         }
-        encoder.setRenderPipelineState(compositor)
-        encoder.setScissorRect(scissor)
-        encoder.setFragmentTexture(output, index: 0)
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
-        encoder.endEncoding()
       }
     case .slang(let pipeline):
       let pass = MTLRenderPassDescriptor()
@@ -506,6 +483,40 @@ final class ShaderRenderCore {
       encoder.setFragmentBytes(&uniforms, length: MemoryLayout<SlangUniforms>.stride, index: 0)
       encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 6)
       encoder.endEncoding()
+    }
+  }
+
+  /// Mask only excluded desktop edges after the chain has saved its feedback.
+  /// Drawing directly to the destination avoids an output-sized texture and a
+  /// full-screen sampling pass; an entirely visible desktop needs no extra pass.
+  private func maskDesktopEdges(
+    commandBuffer: MTLCommandBuffer, destination: MTLTexture,
+    visible: MTLScissorRect, pipeline: MTLRenderPipelineState
+  ) throws {
+    let width = destination.width, height = destination.height
+    if visible.x == 0, visible.y == 0, visible.width == width, visible.height == height { return }
+    let empty = visible.width == 0 || visible.height == 0
+    let pass = MTLRenderPassDescriptor()
+    pass.colorAttachments[0].texture = destination
+    pass.colorAttachments[0].loadAction = empty ? .clear : .load
+    pass.colorAttachments[0].storeAction = .store
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+    guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else {
+      throw ShaderRenderError.encoderUnavailable
+    }
+    defer { encoder.endEncoding() }
+    guard !empty else { return }
+    encoder.setRenderPipelineState(pipeline)
+    let right = visible.x + visible.width, bottom = visible.y + visible.height
+    let excluded = [
+      MTLScissorRect(x: 0, y: 0, width: width, height: visible.y),
+      MTLScissorRect(x: 0, y: bottom, width: width, height: height - bottom),
+      MTLScissorRect(x: 0, y: visible.y, width: visible.x, height: visible.height),
+      MTLScissorRect(x: right, y: visible.y, width: width - right, height: visible.height),
+    ]
+    for rectangle in excluded where rectangle.width > 0 && rectangle.height > 0 {
+      encoder.setScissorRect(rectangle)
+      encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
     }
   }
 
