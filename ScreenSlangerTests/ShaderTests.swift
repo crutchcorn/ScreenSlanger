@@ -606,6 +606,79 @@ struct ShaderTests {
         try expectPixels(finishRendering(next, to: nextDestination), expected: inputPixels)
     }
 
+    @Test("An idle RetroArch chain releases its completed command buffer")
+    func completedFrameStorageIsReleased() async throws {
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        try await shared.loadEffect(ShaderLoadRequest(url: fixtureURL("retroarch-helper")))
+        let core = ShaderRenderCore(resources: shared)
+        weak var completed: (any MTLCommandBuffer)?
+        try autoreleasepool {
+            let commands = try #require(shared.commandQueue.makeCommandBuffer())
+            let destination = try makeTexture()
+            completed = commands
+            try core.encode(commandBuffer: commands, source: makeTexture(pixels: inputPixels),
+                            destination: destination, context: ShaderFrameContext(outputSize: SIMD2(2, 2)))
+            _ = try finishRendering(commands, to: destination)
+        }
+        // Completion schedules cleanup on the chain's own thread. No additional
+        // render or clear may be needed to release the last command's storage.
+        for _ in 0..<200 {
+            if completed == nil { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(completed == nil, "The idle chain retained its completed command buffer")
+        #expect(shared.effect != nil)
+    }
+
+    @Test("Late and premature completion notifications cannot release a newer frame")
+    func completionCannotReleaseAnotherFrame() async throws {
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        try await shared.loadEffect(ShaderLoadRequest(url: fixtureURL("retroarch-helper")))
+        let effect = try #require(shared.effect)
+        guard case .retroArch(let chains) = effect.backend else {
+            Issue.record("Expected a RetroArch filter chain")
+            return
+        }
+        let chain = try #require(chains[0])
+        let core = ShaderRenderCore(resources: shared)
+        let source = try makeTexture(pixels: inputPixels)
+        let destination = try makeTexture()
+        let context = ShaderFrameContext(outputSize: SIMD2(2, 2))
+        let first = try #require(shared.commandQueue.makeCommandBuffer())
+        try core.encode(commandBuffer: first, source: source, destination: destination, context: context)
+        _ = try finishRendering(first, to: destination)
+
+        let second = try #require(shared.commandQueue.makeCommandBuffer())
+        let third = try #require(shared.commandQueue.makeCommandBuffer())
+        defer {
+            if second.status == .notEnqueued {
+                _ = try? finishRendering(second, to: destination)
+            }
+            chain.discardUnsubmittedFrame(commandBuffer: third)
+        }
+        try core.encode(commandBuffer: second, source: source, destination: destination, context: context)
+        // A completion may arrive after the next frame has claimed the slot.
+        // Queue these before the next encode so the worker processes them first.
+        chain.releaseCompletedFrame(id: ObjectIdentifier(first))
+        chain.releaseCompletedFrame(id: ObjectIdentifier(second))
+        shared.parameterState.setValue(1, for: "GAIN")
+        do {
+            try core.encode(commandBuffer: third, source: source, destination: destination, context: context)
+            Issue.record("A completion notification released an unsubmitted frame")
+            return
+        } catch RetroArchRuntimeError.frameInFlight {
+            // The rejected attempt must not alter the second frame's uniforms.
+        }
+        try expectPixels(finishRendering(second, to: destination), expected: [
+            0, 0, 128, 255, 0, 128, 0, 255,
+            128, 0, 0, 255, 128, 128, 128, 255,
+        ])
+        try core.encode(commandBuffer: third, source: source, destination: destination, context: context)
+        try expectPixels(finishRendering(third, to: destination), expected: inputPixels)
+    }
+
     @Test("Discarding an unsubmitted frame releases its chain for the next render")
     func discardedFrameReleasesBusyGate() async throws {
         let shared = SharedMetalResources.shared

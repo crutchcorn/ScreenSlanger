@@ -64,6 +64,19 @@ final class RetroArchFilterChain: Sendable {
                              frameCount: frameCount, framesPerSecond: framesPerSecond,
                              frameTimeMilliseconds: frameTimeMilliseconds, parameterValues: parameterValues)
         }
+        let commandID = ObjectIdentifier(commandBuffer)
+        commandBuffer.addCompletedHandler { [weak self] _ in
+            self?.releaseCompletedFrame(id: commandID)
+        }
+    }
+
+    /// Release completed command storage even when a static desktop produces no
+    /// next frame. Never block a Metal callback on the worker: teardown on that
+    /// thread may itself be waiting for command completion.
+    func releaseCompletedFrame(id: ObjectIdentifier) {
+        // Metal can invoke completion while destroying an abandoned command.
+        // Carry its identity, never retain the callback's potentially dying buffer.
+        worker.schedule { state in state?.releaseCompletedFrame(id: id) }
     }
 
     /// If later encoding fails and the caller drops the unsubmitted command buffer,
@@ -75,7 +88,7 @@ final class RetroArchFilterChain: Sendable {
 }
 
 private struct LibraCommand: @unchecked Sendable {
-    // As with LibraFrame, the caller lends exclusive encoding ownership for this call.
+    // The worker only inspects identity/status here; it never encodes commands.
     let buffer: any MTLCommandBuffer
 }
 
@@ -157,6 +170,10 @@ private final class LibraWorker: Sendable {
     }
 
     deinit { queue.finish() }
+
+    func schedule(_ body: @escaping @Sendable (inout LibraState?) -> Void) {
+        queue.append(body)
+    }
 
     func perform<Value: Sendable>(_ body: @escaping @Sendable (inout LibraState?) throws -> Value) throws -> Value {
         let reply = Reply<Value>()
@@ -257,6 +274,15 @@ private final class LibraState {
         options.brightness_nits = 200
         try api.check(api.chainFrame(&chain, commandBuffer, Int(truncatingIfNeeded: frameCount), input, output, nil, nil, &options))
         lastCommandBuffer = commandBuffer
+    }
+
+    func releaseCompletedFrame(id: ObjectIdentifier) {
+        // A new frame can be encoded before an older completion reaches this
+        // queue. Its busy gate and retained resources belong to that new frame.
+        if let commandBuffer = lastCommandBuffer, ObjectIdentifier(commandBuffer) == id,
+           commandBuffer.status == .completed || commandBuffer.status == .error {
+            lastCommandBuffer = nil
+        }
     }
 
     func discardUnsubmittedFrame(_ commandBuffer: any MTLCommandBuffer) {
