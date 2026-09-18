@@ -1,0 +1,224 @@
+--- a/librashader-runtime/src/scaling.rs
++++ b/librashader-runtime/src/scaling.rs
+@@ -247,13 +247,44 @@
+         Self: Sized,
+         P: FilterPassMeta,
+     {
+-        scale_output_framebuffers_callback::<T, Self, Self::Error, Self::Context, P, _>(
++        Self::scale_output_framebuffers_with_final_output(
+             source_size,
+             viewport_size,
+             original_size,
+             output,
+             passes,
+             context,
++            true,
++            callback,
++        )
++    }
++
++    /// Scale output targets, optionally leaving the final target unallocated when the
++    /// caller renders directly to its viewport and no pass reads final feedback.
++    /// The callback must not access the final target when `scale_final_output` is false.
++    #[inline(always)]
++    fn scale_output_framebuffers_with_final_output<P>(
++        source_size: Size<u32>,
++        viewport_size: Size<u32>,
++        original_size: Size<u32>,
++        output: &mut FramebufferPool<Self>,
++        passes: &mut [P],
++        context: &Self::Context,
++        scale_final_output: bool,
++        callback: impl FnMut(usize, &mut P, &Self, Size<u32>) -> Result<(), Self::Error>,
++    ) -> Result<(), Self::Error>
++    where
++        Self: Sized,
++        P: FilterPassMeta,
++    {
++        scale_output_framebuffers_callback::<T, Self, Self::Error, Self::Context, P, _>(
++            source_size,
++            viewport_size,
++            original_size,
++            output,
++            passes,
++            context,
++            scale_final_output,
+             callback,
+         )
+     }
+@@ -315,6 +346,7 @@
+     output: &mut FramebufferPool<F>,
+     passes: &mut [P],
+     context: &C,
++    scale_final_output: bool,
+     mut callback: CB,
+ ) -> Result<(), E>
+ where
+@@ -360,18 +392,140 @@
+             sizes[index - 1]
+         };
+ 
+-        let size = output[index].scale(
+-            scaling,
+-            format,
+-            &viewport_size,
+-            &prev,
+-            &original_size,
+-            should_mipmap,
+-            context,
+-        )?;
++        let size = if index + 1 == len && !scale_final_output {
++            // Keep the declared size for uniforms without allocating an unused
++            // full-size image. Earlier passes retain the same liveness routing.
++            sizes[index]
++        } else {
++            output[index].scale(
++                scaling,
++                format,
++                &viewport_size,
++                &prev,
++                &original_size,
++                should_mipmap,
++                context,
++            )?
++        };
+ 
+         callback(index, &mut passes[index], &output[index], size)?;
+     }
+ 
+     Ok(())
+ }
++
++#[cfg(test)]
++mod output_target_tests {
++    use super::*;
++    use crate::framebuffer::FramebufferInit;
++    use librashader_common::{FilterMode, WrapMode};
++    use librashader_presets::PassMeta;
++    use librashader_reflect::reflect::semantics::BindingMeta;
++    use std::cell::Cell;
++
++    struct Pass(PassMeta);
++    impl FilterPassMeta for Pass {
++        fn framebuffer_format(&self) -> ImageFormat {
++            ImageFormat::R8G8B8A8Unorm
++        }
++        fn meta(&self) -> &PassMeta {
++            &self.0
++        }
++    }
++
++    struct Target {
++        size: Size<u32>,
++    }
++    impl ScaleFramebuffer for Target {
++        type Error = ();
++        type Context = Cell<usize>;
++        fn scale(
++            &mut self,
++            scaling: Scale2D,
++            _: ImageFormat,
++            viewport: &Size<u32>,
++            source: &Size<u32>,
++            original: &Size<u32>,
++            _: bool,
++            calls: &Cell<usize>,
++        ) -> Result<Size<u32>, ()> {
++            calls.set(calls.get() + 1);
++            self.size = source.scale_viewport(scaling, *viewport, *original, None);
++            Ok(self.size)
++        }
++    }
++
++    fn pass(id: i32, scale_type: ScaleType) -> Pass {
++        let axis = Scaling {
++            scale_type,
++            factor: ScaleFactor::Float(1.0),
++        };
++        Pass(PassMeta {
++            id,
++            alias: None,
++            filter: FilterMode::Linear,
++            wrap_mode: WrapMode::ClampToBorder,
++            frame_count_mod: 0,
++            srgb_framebuffer: false,
++            float_framebuffer: false,
++            mipmap_input: false,
++            scaling: Scale2D {
++                valid: true,
++                x: axis.clone(),
++                y: axis,
++            },
++        })
++    }
++
++    fn verify_final_target(scale_final: bool) {
++        let metadata = [BindingMeta::default(), BindingMeta::default()];
++        let generator = || {
++            Ok::<_, ()>(Target {
++                size: Size::new(1, 1),
++            })
++        };
++        let views = || ();
++        let (mut targets, _) = FramebufferInit::new(metadata.iter(), &generator, &views)
++            .init_output_framebuffers()
++            .unwrap();
++        let mut passes = [pass(0, ScaleType::Input), pass(1, ScaleType::Viewport)];
++        let calls = Cell::new(0);
++        let source = Size::new(320, 240);
++        let viewport = Size::new(3840, 2160);
++        let mut outputs = Vec::new();
++        Target::scale_output_framebuffers_with_final_output(
++            source,
++            viewport,
++            source,
++            &mut targets,
++            &mut passes,
++            &calls,
++            scale_final,
++            |_, _, target, size| {
++                outputs.push((target.size, size));
++                Ok(())
++            },
++        )
++        .unwrap();
++        assert_eq!(calls.get(), if scale_final { 2 } else { 1 });
++        assert_eq!(outputs[0], (source, source));
++        assert_eq!(outputs[1].1, viewport);
++        assert_eq!(
++            outputs[1].0,
++            if scale_final {
++                viewport
++            } else {
++                Size::new(1, 1)
++            }
++        );
++    }
++
++    #[test]
++    fn direct_final_output_skips_allocation_but_preserves_declared_size() {
++        verify_final_target(false);
++    }
++    #[test]
++    fn feedback_final_output_still_allocates() {
++        verify_final_target(true);
++    }
++}
+--- a/librashader-runtime-mtl/src/filter_chain.rs
++++ b/librashader-runtime-mtl/src/filter_chain.rs
+@@ -478,13 +478,14 @@
+             },
+         )?;
+ 
+-        OwnedTexture::scale_output_framebuffers_with_context(
++        OwnedTexture::scale_output_framebuffers_with_final_output(
+             source_size,
+             viewport_size,
+             original_size,
+             &mut self.output_framebuffers,
+             passes,
+             &scale_context,
++            self.draw_last_pass_feedback,
+             |index, pass, target, size| {
+                 source.filter_mode = pass.meta.filter;
+                 source.wrap_mode = pass.meta.wrap_mode;

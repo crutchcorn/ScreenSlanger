@@ -1,0 +1,97 @@
+--- a/librashader-runtime-mtl/src/luts.rs
++++ b/librashader-runtime-mtl/src/luts.rs
+@@ -6,7 +6,8 @@
+ use objc2::runtime::ProtocolObject;
+ use objc2_metal::{
+     MTLBlitCommandEncoder, MTLDevice, MTLOrigin, MTLPixelFormat, MTLRegion, MTLSize,
+-    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureUsage,
++    MTLStorageMode, MTLTexture, MTLTextureDescriptor, MTLTextureSwizzle, MTLTextureSwizzleChannels,
++    MTLTextureUsage,
+ };
+ use std::ffi::c_void;
+ use std::ptr::NonNull;
+@@ -22,19 +23,35 @@
+ impl LutTexture {
+     pub fn new(
+         device: &ProtocolObject<dyn MTLDevice>,
+-        image: Image<BGRA8>,
++        mut image: Image<BGRA8>,
+         config: &TextureMeta,
+         mipmapper: &ProtocolObject<dyn MTLBlitCommandEncoder>,
+     ) -> Result<Self> {
++        // Preserve exactly grayscale LUTs in RG8 (luminance, alpha). Keeping an
++        // explicit alpha channel also preserves transparent clamp-to-border samples.
++        // Reuse the decoded allocation in place; it is dropped after upload below.
++        let grayscale = compact_grayscale(&mut image.bytes);
+         let descriptor = unsafe {
+             let descriptor =
+                 MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+-                    MTLPixelFormat::BGRA8Unorm,
++                    if grayscale {
++                        MTLPixelFormat::RG8Unorm
++                    } else {
++                        MTLPixelFormat::BGRA8Unorm
++                    },
+                     image.size.width as usize,
+                     image.size.height as usize,
+                     config.mipmap,
+                 );
+ 
++            if grayscale {
++                descriptor.setSwizzle(MTLTextureSwizzleChannels {
++                    red: MTLTextureSwizzle::Red,
++                    green: MTLTextureSwizzle::Red,
++                    blue: MTLTextureSwizzle::Red,
++                    alpha: MTLTextureSwizzle::Green,
++                });
++            }
+             descriptor.setSampleCount(1);
+             descriptor.setMipmapLevelCount(if config.mipmap {
+                 image.size.calculate_miplevels() as usize
+@@ -74,7 +91,7 @@
+                 0,
+                 // SAFETY: replaceRegion withBytes is const.
+                 NonNull::new_unchecked(image.bytes.as_slice().as_ptr() as *mut c_void),
+-                4 * image.size.width as usize,
++                (if grayscale { 2 } else { 4 }) * image.size.width as usize,
+             )
+         }
+ 
+@@ -90,3 +107,37 @@
+         }))
+     }
+ }
++
++/// Compact exact grayscale pixels in place; preserve color images byte-for-byte.
++fn compact_grayscale(bytes: &mut Vec<u8>) -> bool {
++    if bytes.len() % 4 != 0 || !bytes.chunks_exact(4).all(|p| p[0] == p[1] && p[1] == p[2]) {
++        return false;
++    }
++    let pixels = bytes.len() / 4;
++    for index in 0..pixels {
++        bytes[index * 2] = bytes[index * 4];
++        bytes[index * 2 + 1] = bytes[index * 4 + 3];
++    }
++    bytes.truncate(pixels * 2);
++    true
++}
++
++#[cfg(test)]
++mod tests {
++    use super::compact_grayscale;
++
++    #[test]
++    fn grayscale_preserves_color_and_alpha() {
++        let mut bytes = vec![0, 0, 0, 255, 127, 127, 127, 128, 255, 255, 255, 0];
++        assert!(compact_grayscale(&mut bytes));
++        assert_eq!(bytes, [0, 255, 127, 128, 255, 0]);
++    }
++
++    #[test]
++    fn color_preserves_original_bytes() {
++        let original = vec![0, 0, 0, 255, 1, 2, 1, 255];
++        let mut bytes = original.clone();
++        assert!(!compact_grayscale(&mut bytes));
++        assert_eq!(bytes, original);
++    }
++}

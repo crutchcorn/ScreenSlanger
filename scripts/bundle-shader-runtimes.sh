@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Xcode runs this after resources are copied and before signing the application.
-# Downloads belong to setup-dependencies.sh; builds are deterministic and offline.
+# Downloads and Rust compilation belong to setup-dependencies.sh; Xcode builds are offline.
 : "${SRCROOT:?This script is an Xcode build phase.}"
 : "${TARGET_BUILD_DIR:?This script is an Xcode build phase.}"
 : "${CONTENTS_FOLDER_PATH:?This script is an Xcode build phase.}"
@@ -11,15 +11,24 @@ set -euo pipefail
 : "${TARGET_TEMP_DIR:?This script is an Xcode build phase.}"
 
 slang_version="2026.18"
-librashader_version="0.12.0"
+librashader_version="0.12.0-screenslanger.1"
 tools_directory="$HOME/Library/Application Support/ScreenSlanger/Tools"
 slang_source="$tools_directory/slang/$slang_version"
-librashader_source="$tools_directory/librashader/$librashader_version/librashader.dylib"
+librashader_directory="$tools_directory/librashader/$librashader_version"
+librashader_source="$librashader_directory/librashader.dylib"
 
 if [[ ! -x "$slang_source/bin/slangc" || ! -f "$librashader_source" ]]; then
     echo "error: Shader dependencies are missing. Run scripts/setup-dependencies.sh from the checkout, then build again." >&2
     exit 1
 fi
+
+# Validate the installed library before changing its install name or signing it.
+# Source hashes remain valid in the app; the installation's binary hash does not.
+(
+    cd "$librashader_directory"
+    shasum -a 256 --check RUNTIME.sha256
+    shasum -a 256 --check SHA256SUMS
+)
 
 package_staging="$TARGET_TEMP_DIR/ShaderRuntimes"
 slang_bundle="$package_staging/Slang.app"
@@ -39,6 +48,12 @@ cp "$slang_source/LICENSE" "$notices_destination/Slang/LICENSE"
 rsync -a --delete "$slang_source/LICENSES/" "$notices_destination/Slang/LICENSES/"
 cp "$SRCROOT/Vendor/CLibrashader/LICENSE-MPL-2.0.md" "$notices_destination/librashader/LICENSE-MPL-2.0.md"
 cp "$SRCROOT/Vendor/CLibrashader/NOTICE.md" "$notices_destination/librashader/NOTICE.md"
+cp "$SRCROOT/Vendor/CLibrashader/BUILDING.md" "$notices_destination/librashader/BUILDING.md"
+for source_file in librashader-v0.12.0-source.tar.gz \
+    0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch \
+    BUILD-INFO.txt SHA256SUMS; do
+    cp "$librashader_directory/$source_file" "$notices_destination/librashader/$source_file"
+done
 cat > "$notices_destination/Slang/NOTICE.txt" <<NOTICE
 Slang $slang_version, Copyright shader-slang contributors.
 This app bundles the unmodified official macOS compiler and libraries, apart from

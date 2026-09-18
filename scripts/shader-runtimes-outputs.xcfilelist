@@ -67,5 +67,11 @@ $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/Slang/NOTICE
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/LICENSE-MPL-2.0.md
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/NOTICE.md
-// Pinned Slang 2026.18 + librashader 0.12.0 bundle contents.
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/BUILDING.md
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/BUILD-INFO.txt
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/SHA256SUMS
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/librashader-v0.12.0-source.tar.gz
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0001-skip-unused-final-target.patch
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0002-compact-grayscale-luts.patch
+// Pinned Slang 2026.18 + librashader 0.12.0-screenslanger.1 bundle contents.
 // Xcode requires every file and directory explicitly for sandboxed script outputs.

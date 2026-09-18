@@ -308,6 +308,42 @@ struct ShaderTests {
         try expectPixels(render(), expected: solidPixel([0, 0, 255, 255]))
     }
 
+    @Test("Compact grayscale lookup textures preserve alpha, borders, and mipmap sampling")
+    func grayscaleLookupSampling() async throws {
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        let shader = temporary.appendingPathComponent("sample.slang")
+        let texture = temporary.appendingPathComponent("lookup.png")
+        let preset = temporary.appendingPathComponent("sampler.slangp")
+        let cases: [(pixels: [UInt8], expression: String, expected: [UInt8])] = [
+            (Array(repeating: [128, 128, 128, 255], count: 4).flatMap { $0 },
+             "texture(BACKGROUND, vec2(-0.25, 0.25))", [0, 0, 0, 0]),
+            (Array(repeating: [128, 128, 128, 64], count: 4).flatMap { $0 },
+             "texture(BACKGROUND, vec2(0.25, 0.25))", [128, 128, 128, 64]),
+            ([0, 0, 0, 255, 64, 64, 64, 255, 128, 128, 128, 255, 192, 192, 192, 255],
+             "textureLod(BACKGROUND, vec2(0.5), 1.0)", [96, 96, 96, 255]),
+        ]
+        for item in cases {
+            try writeTexture(rgba: item.pixels, to: texture, premultiplied: false)
+            try retroArchSource(fragment: item.expression,
+                                fragmentDeclarations: "layout(set = 0, binding = 3) uniform sampler2D BACKGROUND;")
+                .write(to: shader, atomically: true, encoding: .utf8)
+            try """
+            shaders = 1
+            shader0 = "sample.slang"
+            textures = "BACKGROUND"
+            BACKGROUND = "lookup.png"
+            BACKGROUND_linear = false
+            BACKGROUND_mipmap = true
+            BACKGROUND_wrap_mode = "clamp_to_border"
+            """.write(to: preset, atomically: true, encoding: .utf8)
+            try await shared.loadEffect(ShaderLoadRequest(url: preset))
+            try expectPixels(render(), expected: solidPixel(item.expected))
+        }
+    }
+
     @Test("Missing preset textures fail without retaining the previous effect")
     func missingPresetTexture() async throws {
         let temporary = try temporaryDirectory()
@@ -404,6 +440,36 @@ struct ShaderTests {
                     pixels: solidPixel([0, 0, 0, 0])), expected: inputPixels)
             }
         }
+    }
+
+    @Test("Intermediate-pass feedback survives when the final pass renders directly")
+    func intermediateFeedbackWithDirectOutput() async throws {
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try retroArchSource(
+            fragment: "global.FrameCount == 0u ? texture(Source, vTexCoord) : texture(PassFeedback0, vTexCoord)",
+            uniforms: "layout(set = 0, binding = 0) uniform Global { mat4 MVP; uint FrameCount; } global;",
+            fragmentDeclarations: "layout(set = 0, binding = 3) uniform sampler2D PassFeedback0;")
+            .write(to: temporary.appendingPathComponent("feedback.slang"), atomically: true, encoding: .utf8)
+        try retroArchSource(fragment: "texture(Source, vTexCoord)")
+            .write(to: temporary.appendingPathComponent("output.slang"), atomically: true, encoding: .utf8)
+        let preset = temporary.appendingPathComponent("feedback.slangp")
+        try """
+        shaders = 2
+        shader0 = "feedback.slang"
+        filter_linear0 = false
+        scale_type0 = "source"
+        scale0 = 2.0
+        shader1 = "output.slang"
+        filter_linear1 = false
+        """.write(to: preset, atomically: true, encoding: .utf8)
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        try await shared.loadEffect(ShaderLoadRequest(url: preset))
+        _ = try render(scissor: MTLScissorRect(x: 1, y: 0, width: 1, height: 2))
+        try expectPixels(render(
+            context: ShaderFrameContext(outputSize: SIMD2(2, 2), frameCount: 1),
+            pixels: solidPixel([0, 0, 0, 0])), expected: inputPixels)
     }
 
     @Test("Each display retains its own previous input across repeated frames")
@@ -570,12 +636,13 @@ struct ShaderTests {
         try check(shared)
     }
 
-    private func writeTexture(rgba: [UInt8], to url: URL) throws {
+    private func writeTexture(rgba: [UInt8], to url: URL, premultiplied: Bool = true) throws {
         let provider = try #require(CGDataProvider(data: Data(rgba) as CFData))
         let image = try #require(CGImage(
             width: 2, height: 2, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 8,
             space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue).union(.byteOrder32Big),
+            bitmapInfo: CGBitmapInfo(rawValue: (premultiplied ? CGImageAlphaInfo.premultipliedLast : .last).rawValue)
+                .union(.byteOrder32Big),
             provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
         let destination = try #require(CGImageDestinationCreateWithURL(url as CFURL, "public.png" as CFString, 1, nil))
         CGImageDestinationAddImage(destination, image, nil)

@@ -2,8 +2,15 @@ $(SRCROOT)/scripts/bundle-shader-runtimes.sh
 $(SRCROOT)/scripts/Slang-Info.plist
 $(SRCROOT)/Vendor/CLibrashader/LICENSE-MPL-2.0.md
 $(SRCROOT)/Vendor/CLibrashader/NOTICE.md
+$(SRCROOT)/Vendor/CLibrashader/BUILDING.md
 $(HOME)/Library/Application Support/ScreenSlanger/Tools/slang/2026.18/bin/slangc
 $(HOME)/Library/Application Support/ScreenSlanger/Tools/slang/2026.18/lib/
 $(HOME)/Library/Application Support/ScreenSlanger/Tools/slang/2026.18/LICENSE
 $(HOME)/Library/Application Support/ScreenSlanger/Tools/slang/2026.18/LICENSES/
-$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0/librashader.dylib
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/librashader.dylib
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/RUNTIME.sha256
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/SHA256SUMS
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/BUILD-INFO.txt
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/librashader-v0.12.0-source.tar.gz
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/0001-skip-unused-final-target.patch
+$(HOME)/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/0002-compact-grayscale-luts.patch

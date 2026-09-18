@@ -29,24 +29,28 @@ You can share the app alongside a standalone `.slang` file. If an effect uses in
 
 # Building from source
 
-Use Xcode 27 with its Swift 6.4 compiler and macOS 27 SDK. All targets use Swift 6 language mode, including its strict concurrency checks, and require macOS 27 or later. Before the first build, install the pinned build dependencies:
+Use Xcode 27 with its Swift 6.4 compiler and macOS 27 SDK. All targets use Swift 6 language mode, including its strict concurrency checks, and require macOS 27 or later. The setup step also requires [rustup](https://rustup.rs/) and Rust 1.93.0 to build the patched Metal runtime. Before the first build, install the pinned build dependencies:
 
 ```shell
+rustup toolchain install 1.93.0 --profile minimal
 ./scripts/setup-dependencies.sh
 ```
 
 This downloads [Slang 2026.18](https://github.com/shader-slang/slang/releases/tag/v2026.18) and checks its SHA-256 checksum. Slang is installed into `~/Library/Application Support/ScreenSlanger/Tools/slang/2026.18`, with a `current` symlink that ScreenSlanger discovers automatically. The full Slang distribution is needed, including its libraries. Existing installations under `~/slang` are preserved.
 
-The script also installs the checksum-verified [librashader 0.12.0 Metal runtime](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0`. This handles RetroArch presets, including multiple passes, custom vertex stages, reflected uniforms, textures, and filtering. It includes its compiler internally, so Homebrew, `glslang`, and `spirv-cross` are no longer required. It includes the runtime's MPL-2.0 license and corresponding-source notice. The vendored C header's origin, license, and update procedure are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
+The script also builds **librashader 0.12.0-screenslanger.1** from the checksum-verified [upstream 0.12.0 source](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0), with reviewed patches that avoid unused final-pass targets and store grayscale lookup textures more compactly without changing their sampled values. It uses Rust 1.93.0, the upstream `Cargo.lock`, and an optimized Metal-only build. Setup downloads Cargo dependencies and compiles the runtime once, installing it into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1` without replacing an existing official `0.12.0` installation.
 
-Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The **Bundle Shader Runtimes** build phase copies the pinned tools and licenses into the app and signs the nested executables and libraries before Xcode signs the app. Builds never download tools. There are no Swift packages to resolve.
+This runtime handles RetroArch presets, including multiple passes, custom vertex stages, reflected uniforms, textures, and filtering. Its compiler is built in, so Homebrew, `glslang`, and `spirv-cross` are not required. The app includes the MPL-2.0 license, original source archive, exact patches, checksums, and rebuild instructions. The vendored C header's origin and the runtime's build and update procedures are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The **Bundle Shader Runtimes** build phase verifies the installed runtime, copies the pinned tools, licenses, and corresponding source into the app, and signs the nested executables and libraries before Xcode signs the app. Xcode builds never download tools or compile Rust. There are no Swift packages to resolve.
 
 Run the setup script again after pulling project updates. The Slang and librashader versions and checksums are pinned in the script so updates can be reviewed and tested together with the app. The macOS 27 dependency baseline is:
 
 | Dependency | Version | Purpose |
 | --- | --- | --- |
 | [Slang](https://github.com/shader-slang/slang/releases/tag/v2026.18) | 2026.18 | Native Slang effects |
-| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0 | RetroArch Metal rendering runtime |
+| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.1 | Patched RetroArch Metal rendering runtime |
+| [Rust](https://www.rust-lang.org/) | 1.93.0 | Build-time compiler for librashader; not required to run the app |
 
 To inspect installed versions:
 

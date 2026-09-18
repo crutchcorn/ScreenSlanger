@@ -1,6 +1,6 @@
 # Contributing to ScreenSlanger
 
-Build with Xcode 27 and Swift 6 language mode. Run `scripts/setup-dependencies.sh` once to install the pinned native runtimes, then open `ScreenSlanger.xcodeproj`. Use the ScreenSlanger scheme and My Mac destination. Run tests with Product → Test (⌘U), or:
+Build with Xcode 27 and Swift 6 language mode. Install [rustup](https://rustup.rs/) and the pinned build compiler with `rustup toolchain install 1.93.0 --profile minimal`. Run `scripts/setup-dependencies.sh` once to install the pinned native runtimes, then open `ScreenSlanger.xcodeproj`. Rust is used only during setup to compile librashader; normal Xcode builds and app recipients do not need it. Use the ScreenSlanger scheme and My Mac destination. Run tests with Product → Test (⌘U), or:
 
 ```sh
 xcodebuild test -project ScreenSlanger.xcodeproj -scheme ScreenSlanger -destination 'platform=macOS'
@@ -12,7 +12,7 @@ The tests require Metal GPU access. They run without launching the app or changi
 
 `Vendor/CLibrashader` is the C interface for [SnowflakePowered/librashader](https://github.com/SnowflakePowered/librashader), a RetroArch shader preset parser, compiler, and rendering runtime. It is not a new shader implementation written for ScreenSlanger.
 
-The version is pinned to **0.12.0**, upstream tag [`librashader-v0.12.0`](https://github.com/SnowflakePowered/librashader/tree/librashader-v0.12.0). The original files were fetched from upstream during the ScreenSlanger Metal backend integration:
+The upstream version is pinned to **0.12.0**, tag [`librashader-v0.12.0`](https://github.com/SnowflakePowered/librashader/tree/librashader-v0.12.0). The runtime build is **0.12.0-screenslanger.1**, with the local source patches described below. The header remains the original upstream header fetched during the ScreenSlanger Metal backend integration:
 
 | Local file | Origin |
 | --- | --- |
@@ -21,25 +21,31 @@ The version is pinned to **0.12.0**, upstream tag [`librashader-v0.12.0`](https:
 | `Vendor/CLibrashader/shim.h` | Written for ScreenSlanger. Enables `LIBRA_RUNTIME_METAL` before importing the official header. |
 | `Vendor/CLibrashader/module.modulemap` | Written for ScreenSlanger. Exposes the header as the `CLibrashader` Clang module for Swift. |
 | `Vendor/CLibrashader/NOTICE.md` | Written for ScreenSlanger. Records licensing, corresponding-source links, and integration constraints. |
+| `Vendor/CLibrashader/BUILDING.md` | Written for ScreenSlanger. Reproduces the runtime from a checkout or the source and patches included in the app. |
+| `Vendor/CLibrashader/patches/0001-skip-unused-final-target.patch` | ScreenSlanger's MPL-2.0 modification to upstream framebuffer scaling and Metal rendering. Skips full-size allocation of the final target when the shader does not need final-pass feedback; preserves declared sizes and feedback behavior. |
+| `Vendor/CLibrashader/patches/0002-compact-grayscale-luts.patch` | ScreenSlanger's MPL-2.0 modification to upstream Metal LUT loading. Packs exactly grayscale textures into `RG8Unorm` with a red/red/red/green component swizzle, preserving the original RGB and alpha values, including transparent border samples. Colored textures retain their original `BGRA8Unorm` representation. |
 
-The dynamic library is **not committed to the repository**. The setup script downloads the official macOS release archive, verifies its SHA-256 digest, and installs its unmodified `librashader.dylib` into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0/`. The script installs the license and source notice alongside it. The app build copies the library into `Contents/Frameworks/`, gives it a relocatable install name, and signs it with the app's build identity. `LIBRASHADER_PATH` can override the runtime for unhosted tests and probes; applications always load the embedded runtime.
+The dynamic library is **not committed to the repository**. The setup script downloads the pinned upstream source archive, verifies its SHA-256 digest and both reviewed patch digests, applies the patches, and runs `cargo +1.93.0 build --locked --profile optimized --package librashader-capi --no-default-features --features runtime-metal`. It builds with `MACOSX_DEPLOYMENT_TARGET=27.0`, the selected macOS SDK, and `CARGO_PROFILE_OPTIMIZED_STRIP=none`. Disabling stripping avoids Rust 1.93.0 generating misaligned Mach-O LINKEDIT string pools that macOS 27 rejects when loading build-time procedural macros or the final library; optimization and LTO remain enabled. `Cargo.lock` pins Rust dependencies and the embedded C/C++ compiler dependencies. Setup downloads any missing Cargo dependencies and compiles them; the normal Xcode build never invokes Cargo or accesses the network.
 
-The pinned archive checksums are from the upstream [GitHub release asset metadata](https://api.github.com/repos/SnowflakePowered/librashader/releases/tags/librashader-v0.12.0):
+Setup installs the library as `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/librashader.dylib`, alongside its source archive, applied patches, license, notice, and build instructions. An existing official `0.12.0` installation is preserved. `BUILD-INFO.txt` records the version, source and patch checksums, compiler version, architecture, and build command. Setup checks that metadata before reusing an installation, so a changed source or build recipe needs a new local runtime version. `RUNTIME.sha256` verifies the installed library; `SHA256SUMS` verifies its source archive and patches.
 
-| Architecture | SHA-256 |
+The pinned corresponding-source checksums are:
+
+| File | SHA-256 |
 | --- | --- |
-| Apple Silicon (`aarch64`) | `49808004a4904f6a99e0231092dcfdfe52b7b61f68430a4c9f1e165749c4c90e` |
-| Intel (`x86_64`) | `8b2a50cefacf4073e8fa4757bec30242a788068c4096a580d94430688c184767` |
+| [Upstream source archive](https://github.com/SnowflakePowered/librashader/archive/refs/tags/librashader-v0.12.0.tar.gz) | `4bf8cf2489d00848dcabbf2163204093776082da4217d5a5db45e4cbf335cedf` |
+| `0001-skip-unused-final-target.patch` | `f5a9c09c0f7a72059eb536fbd63eacbc513bea5fe964e70f3a122ae61bfd90fb` |
+| `0002-compact-grayscale-luts.patch` | `2fd5bd08afabf7f0ee6c8329fcfda778b6460001d7de50145c32af329138fe5e` |
 
 The extracted, unmodified `librashader.h` has SHA-256 `5d478897c391af3f60015810b67785ae1a286d262a845485276e36ded9f21e62`.
 
-The corresponding runtime source is available as the [pinned source archive](https://github.com/SnowflakePowered/librashader/archive/refs/tags/librashader-v0.12.0.tar.gz). If shipping the binary inside an app, include its MPL-2.0 license and source notice. The vendored C header keeps its own MIT notice.
+The app build copies the library into `Contents/Frameworks/`, gives it a relocatable install name, and signs it with the app's build identity. It also bundles the exact upstream archive, both patches, `SHA256SUMS`, `BUILD-INFO.txt`, `BUILDING.md`, the MPL-2.0 license, and source notice under `Contents/Resources/ThirdParty/librashader/`. These files let a recipient reconstruct the modified runtime source without this checkout. The installation's binary hash is verified before packaging and is not bundled because signing changes its bytes. The vendored C header keeps its own MIT notice. `LIBRASHADER_PATH` can override the runtime for unhosted tests and probes; applications always load the embedded runtime.
 
 ## Updating librashader
 
-1. Select an official stable release with both supported macOS assets. Record the tag, asset URLs, and published SHA-256 digests in the setup script and this document.
-2. Download and verify the archive before extracting its C header. Replace the header without editing upstream declarations; retain its copyright and license. Refresh the upstream license and source notice if needed.
-3. Update the pinned runtime path in `ScreenSlanger/librashader.swift`, the installer, the bundling script and input/output file lists, and the README together. The output list must enumerate every packaged file and directory. Compare C ABI/API versions, struct layouts, ownership rules, and the Metal runtime's thread-safety requirements. Do not guess Swift declarations for C structs or function pointers.
+1. Select an official stable release, record the source tag and archive checksum, and review the locked dependencies and Rust compiler requirements. Check whether upstream has incorporated our patches before rebasing them. Any source, patch, or build recipe change requires a new distinct local runtime version; never overwrite an installed upstream or local version.
+2. Download and verify the official release archive before extracting its C header. Replace the header without editing upstream declarations; retain its copyright and license. Refresh the upstream license and source notice if needed. Update each source patch's checksum in the setup script and this document after review.
+3. Update the pinned runtime path in `ScreenSlanger/librashader.swift`, the installer, the bundling script and input/output file lists, the source rebuilding instructions, and the README together. The output list must enumerate every packaged file and directory, including the corresponding source. Compare C ABI/API versions, struct layouts, ownership rules, and the Metal runtime's thread-safety requirements. Do not guess Swift declarations for C structs or function pointers.
 4. Install the new runtime and run the full native test suite, including known-pixel output, multipass presets, reflected parameter layouts, texture filtering, custom vertices, includes, failures, and reloads. Verify app activation, animated effects on a static desktop, parameter editing, display changes, and deactivation on a Metal-capable Mac.
 5. Commit the header, adapter changes, checksums, documentation, and regression fixtures together. Do not add downloaded native binaries or generated caches to Git.
 
@@ -49,7 +55,7 @@ The native shader-slang compiler is a separate backend and dependency. Its pinne
 
 ## Self-contained application builds
 
-The application target's **Bundle Shader Runtimes** phase runs `scripts/bundle-shader-runtimes.sh` as part of normal Debug, Release, and Archive builds. Input/output `.xcfilelist` files declare its dependency paths and every packaged file and directory. User-script sandboxing stays enabled: modifications and signing use the build's temporary directory, followed by copies directly to the declared outputs. The build never downloads tools: run setup first, and a missing runtime fails the build with instructions. Clean the build products when changing dependency versions so files removed by an upstream release cannot remain in an old bundle.
+The application target's **Bundle Shader Runtimes** phase runs `scripts/bundle-shader-runtimes.sh` as part of normal Debug, Release, and Archive builds. Input/output `.xcfilelist` files declare its dependency paths and every packaged file and directory. User-script sandboxing stays enabled: modifications and signing use the build's temporary directory, followed by copies directly to the declared outputs. The build verifies the installed library and source checksums before copying them. It never downloads tools or compiles Rust: run setup first, and a missing runtime fails the build with instructions. Clean the build products when changing dependency versions so files removed by an upstream release cannot remain in an old bundle.
 
 The app layout is:
 
@@ -59,7 +65,7 @@ ScreenSlanger.app/Contents/
   Helpers/Slang.app/Contents/lib/                 # Compiler libraries, plugins, and standard modules
   Frameworks/librashader.dylib
   Resources/ThirdParty/Slang/        # Upstream LICENSE, LICENSES, and source notice
-  Resources/ThirdParty/librashader/  # MPL-2.0 license and corresponding-source notice
+  Resources/ThirdParty/librashader/  # MPL-2.0 license, source archive, patches, hashes, rebuild instructions
 ```
 
 Slang is wrapped in a helper `.app` so code signing distinguishes its standard-library data from nested executables. Its executable/`../lib` relationship is preserved so its relative rpaths and runtime plugin lookup remain valid after moving the app. Packaging removes upstream CI-machine absolute rpaths, verifies architecture slices, and signs each nested binary and the helper bundle before Xcode signs the app. Both runtimes use the build's signing identity; local unsigned builds use ad-hoc nested signatures. Developer ID signing requests Apple's secure timestamp; development and ad-hoc signing do not require the timestamp service. Distributing through ordinary macOS download channels still requires your normal Developer ID signing and notarization workflow.
