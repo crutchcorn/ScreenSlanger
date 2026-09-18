@@ -1,0 +1,453 @@
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1835,6 +1835,7 @@
+ dependencies = [
+  "array-concat",
+  "bytemuck",
++ "image",
+  "librashader-common",
+  "librashader-pack",
+  "librashader-preprocess",
+--- a/librashader-runtime-mtl/Cargo.toml
++++ b/librashader-runtime-mtl/Cargo.toml
+@@ -14,6 +14,7 @@
+ # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+ 
+ [dependencies]
++image = { workspace = true }
+ librashader-common = { path = "../librashader-common", features = ["metal"], version = "0.12.0" }
+ librashader-presets = { path = "../librashader-presets", version = "0.12.0" }
+ librashader-preprocess = { path = "../librashader-preprocess", version = "0.12.0" }
+--- a/librashader-runtime-mtl/src/filter_chain.rs
++++ b/librashader-runtime-mtl/src/filter_chain.rs
+@@ -11,7 +11,7 @@
+ use librashader_common::map::FastHashMap;
+ use librashader_common::{ImageFormat, Size, Viewport};
+ use librashader_presets::context::VideoDriver;
+-use librashader_presets::{ShaderFeatures, ShaderPreset};
++use librashader_presets::{ShaderFeatures, ShaderPreset, TextureConfig, TextureMeta};
+ use librashader_reflect::back::msl::MslVersion;
+ use librashader_reflect::back::targets::MSL;
+ use librashader_reflect::back::{CompileReflectShader, CompileShader};
+@@ -22,7 +22,7 @@
+ use librashader_reflect::reflect::ReflectShader;
+ use librashader_runtime::binding::BindingUtil;
+ use librashader_runtime::framebuffer::{FramebufferInit, FramebufferPool};
+-use librashader_runtime::image::{ImageError, LoadedTexture, UVDirection, BGRA8};
++use librashader_runtime::image::{LoadedTexture, UVDirection, BGRA8};
+ use librashader_runtime::quad::QuadType;
+ use librashader_runtime::render_target::RenderTarget;
+ use librashader_runtime::scaling::ScaleFramebuffer;
+@@ -34,14 +34,13 @@
+     MTLCommandBuffer, MTLCommandEncoder, MTLCommandQueue, MTLDevice, MTLLoadAction, MTLPixelFormat,
+     MTLRenderPassDescriptor, MTLResource, MTLStoreAction, MTLTexture,
+ };
+-use rayon::prelude::*;
+ use std::collections::VecDeque;
+ use std::fmt::{Debug, Formatter};
+ use std::path::Path;
+ 
+ mod compile {
+     use super::*;
+-    use librashader_pack::{PassResource, TextureResource};
++    use librashader_pack::PassResource;
+ 
+     #[cfg(feature = "nightly")]
+     pub type ShaderPassMeta =
+@@ -52,15 +51,14 @@
+         ShaderPassArtifact<Box<dyn CompileReflectShader<MSL, SpirvCompilation, SpirvCross> + Send>>;
+ 
+     #[cfg_attr(feature = "nightly", define_opaque(ShaderPassMeta))]
+-    pub fn compile_passes(
++    pub fn compile_passes<'a>(
+         shaders: Vec<PassResource>,
+-        textures: &[TextureResource],
++        textures: impl Iterator<Item = &'a TextureMeta>,
+     ) -> Result<(Vec<ShaderPassMeta>, ShaderSemantics), FilterChainError> {
+-        let (passes, semantics) = MSL::compile_preset_passes::<
+-            SpirvCompilation,
+-            SpirvCross,
+-            FilterChainError,
+-        >(shaders, textures.iter().map(|t| &t.meta))?;
++        let (passes, semantics) =
++            MSL::compile_preset_passes::<SpirvCompilation, SpirvCross, FilterChainError>(
++                shaders, textures,
++            )?;
+         Ok((passes, semantics))
+     }
+ }
+@@ -68,6 +66,22 @@
+ use compile::{compile_passes, ShaderPassMeta};
+ use librashader_pack::{ShaderPresetPack, TextureResource};
+ use librashader_runtime::parameters::RuntimeParameters;
++
++/// Keep disk LUTs unexpanded until Metal can upload them; packed LUTs retain
++/// their public RGBA representation and unchanged loading API.
++enum LutSources {
++    Files(Vec<TextureConfig>),
++    Packed(Vec<TextureResource>),
++}
++
++impl LutSources {
++    fn metadata(&self) -> Box<dyn Iterator<Item = &TextureMeta> + '_> {
++        match self {
++            Self::Files(files) => Box::new(files.iter().map(|t| &t.meta)),
++            Self::Packed(textures) => Box::new(textures.iter().map(|t| &t.meta)),
++        }
++    }
++}
+ 
+ /// A Metal filter chain.
+ pub struct FilterChainMetal {
+@@ -126,8 +140,13 @@
+         queue: &ProtocolObject<dyn MTLCommandQueue>,
+         options: Option<&FilterChainOptionsMetal>,
+     ) -> error::Result<FilterChainMetal> {
+-        let preset = ShaderPresetPack::load_from_preset::<FilterChainError>(preset)?;
+-        Self::load_from_pack(preset, queue, options)
++        let cmd = queue
++            .commandBuffer()
++            .ok_or(FilterChainError::FailedToCreateCommandBuffer)?;
++        let chain = Self::load_from_preset_deferred(preset, queue, &cmd, options)?;
++        cmd.commit();
++        cmd.waitUntilCompleted();
++        Ok(chain)
+     }
+ 
+     /// Load a filter chain from a pre-parsed `ShaderPreset`.
+@@ -141,7 +160,7 @@
+             .ok_or(FilterChainError::FailedToCreateCommandBuffer)?;
+ 
+         let filter_chain =
+-            Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options)?;
++            Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options, None)?;
+ 
+         cmd.commit();
+         cmd.waitUntilCompleted();
+@@ -152,25 +171,38 @@
+     fn load_luts(
+         device: &ProtocolObject<dyn MTLDevice>,
+         cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+-        textures: Vec<TextureResource>,
++        textures: LutSources,
+     ) -> error::Result<FastHashMap<usize, LutTexture>> {
+         let mut luts = FastHashMap::default();
+-
+         let mipmapper = cmd
+             .blitCommandEncoder()
+             .ok_or(FilterChainError::FailedToCreateCommandBuffer)?;
+-
+-        let textures = textures
+-            .into_par_iter()
+-            .map(|texture| LoadedTexture::<BGRA8>::from_texture(texture, UVDirection::TopLeft))
+-            .collect::<Result<Vec<LoadedTexture<BGRA8>>, ImageError>>()?;
+-        for (index, LoadedTexture { meta, image }) in textures.into_iter().enumerate() {
+-            let texture = LutTexture::new(device, image, &meta, &mipmapper)?;
+-            luts.insert(index, texture);
+-        }
+-
++        // Decode and upload one image at a time. Large LUT sets must not retain
++        // every decoded image alongside the compiler's temporary allocations.
++        let result = (|| -> error::Result<_> {
++            match textures {
++                LutSources::Files(files) => {
++                    for (index, texture) in files.into_iter().enumerate() {
++                        let lut =
++                            LutTexture::load(device, &texture.path, &texture.meta, &mipmapper)?;
++                        luts.insert(index, lut);
++                    }
++                }
++                LutSources::Packed(textures) => {
++                    for (index, texture) in textures.into_iter().enumerate() {
++                        let LoadedTexture { meta, image } =
++                            LoadedTexture::<BGRA8>::from_texture(texture, UVDirection::TopLeft)?;
++                        let lut = LutTexture::new(device, image, &meta, &mipmapper)?;
++                        luts.insert(index, lut);
++                    }
++                }
++            }
++            Ok(luts)
++        })();
++        // Missing/corrupt disk images and allocation failures must also close
++        // the encoder before the unsubmitted command buffer is discarded.
+         mipmapper.endEncoding();
+-        Ok(luts)
++        result
+     }
+ 
+     fn init_passes(
+@@ -280,13 +312,14 @@
+     /// The caller is responsible for ending the command buffer and immediately submitting it to a
+     /// graphics queue. The command buffer must be completely executed before calling [`frame`](Self::frame).
+     pub fn load_from_preset_deferred(
+-        preset: ShaderPreset,
++        mut preset: ShaderPreset,
+         queue: &ProtocolObject<dyn MTLCommandQueue>,
+         cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+         options: Option<&FilterChainOptionsMetal>,
+     ) -> error::Result<FilterChainMetal> {
++        let textures = std::mem::take(&mut preset.textures);
+         let preset = ShaderPresetPack::load_from_preset::<FilterChainError>(preset)?;
+-        Self::load_from_pack_deferred(preset, queue, cmd, options)
++        Self::load_from_pack_deferred_internal(preset, queue.device(), cmd, options, Some(textures))
+     }
+ 
+     /// Load a filter chain from a pre-parsed `ShaderPreset`, deferring and GPU-side initialization
+@@ -302,7 +335,7 @@
+         cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+         options: Option<&FilterChainOptionsMetal>,
+     ) -> error::Result<FilterChainMetal> {
+-        Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options)
++        Self::load_from_pack_deferred_internal(preset, queue.device(), &cmd, options, None)
+     }
+ 
+     /// Load a filter chain from a pre-parsed `ShaderPreset`, deferring and GPU-side initialization
+@@ -317,14 +350,19 @@
+         device: Retained<ProtocolObject<dyn MTLDevice>>,
+         cmd: &ProtocolObject<dyn MTLCommandBuffer>,
+         options: Option<&FilterChainOptionsMetal>,
++        texture_paths: Option<Vec<TextureConfig>>,
+     ) -> error::Result<FilterChainMetal> {
+         let config = RuntimeParameters::new(&preset);
+-        let (passes, semantics) = compile_passes(preset.passes, &preset.textures)?;
++        let textures = match texture_paths {
++            Some(paths) => LutSources::Files(paths),
++            None => LutSources::Packed(preset.textures),
++        };
++        let (passes, semantics) = compile_passes(preset.passes, textures.metadata())?;
+ 
+         let filters = Self::init_passes(&device, passes, &semantics)?;
+ 
+         let samplers = SamplerSet::new(&device)?;
+-        let luts = FilterChainMetal::load_luts(&device, &cmd, preset.textures)?;
++        let luts = FilterChainMetal::load_luts(&device, &cmd, textures)?;
+         let framebuffer_gen = || {
+             Ok::<_, error::FilterChainError>(OwnedTexture::new(
+                 &device,
+--- a/librashader-runtime-mtl/src/luts.rs
++++ b/librashader-runtime-mtl/src/luts.rs
+@@ -1,7 +1,9 @@
+ use crate::error::{FilterChainError, Result};
+ use crate::texture::InputTexture;
++use image::DynamicImage;
++use librashader_common::Size;
+ use librashader_presets::TextureMeta;
+-use librashader_runtime::image::{Image, BGRA8};
++use librashader_runtime::image::{Image, PixelFormat, BGRA8};
+ use librashader_runtime::scaling::MipmapSize;
+ use objc2::runtime::ProtocolObject;
+ use objc2_metal::{
+@@ -10,9 +12,48 @@
+     MTLTextureUsage,
+ };
+ use std::ffi::c_void;
++use std::path::Path;
+ use std::ptr::NonNull;
+ 
+ pub(crate) struct LutTexture(InputTexture);
++
++/// Disk grayscale images remain in their decoded layout until upload; all other
++/// formats use the existing RGBA8 conversion and BGRA swizzle.
++enum LutPixels {
++    Luma(Vec<u8>),
++    LumaAlpha(Vec<u8>),
++    Bgra(Vec<u8>),
++}
++
++struct DecodedLut {
++    size: Size<u32>,
++    pixels: LutPixels,
++}
++
++impl DecodedLut {
++    fn from_image(image: DynamicImage) -> Self {
++        let size = Size::new(image.width(), image.height());
++        let pixels = match image {
++            DynamicImage::ImageLuma8(image) => LutPixels::Luma(image.into_raw()),
++            DynamicImage::ImageLumaA8(image) => LutPixels::LumaAlpha(image.into_raw()),
++            image => {
++                let mut bytes = image.into_rgba8().into_raw();
++                BGRA8::convert(&mut bytes);
++                return Self::from_bgra(size, bytes);
++            }
++        };
++        Self { size, pixels }
++    }
++
++    fn from_bgra(size: Size<u32>, mut bytes: Vec<u8>) -> Self {
++        let pixels = if compact_grayscale(&mut bytes) {
++            LutPixels::LumaAlpha(bytes)
++        } else {
++            LutPixels::Bgra(bytes)
++        };
++        Self { size, pixels }
++    }
++}
+ 
+ impl AsRef<InputTexture> for LutTexture {
+     fn as_ref(&self) -> &InputTexture {
+@@ -23,14 +64,35 @@
+ impl LutTexture {
+     pub fn new(
+         device: &ProtocolObject<dyn MTLDevice>,
+-        mut image: Image<BGRA8>,
++        image: Image<BGRA8>,
+         config: &TextureMeta,
+         mipmapper: &ProtocolObject<dyn MTLBlitCommandEncoder>,
+     ) -> Result<Self> {
+-        // Preserve exactly grayscale LUTs in RG8 (luminance, alpha). Keeping an
+-        // explicit alpha channel also preserves transparent clamp-to-border samples.
+-        // Reuse the decoded allocation in place; it is dropped after upload below.
+-        let grayscale = compact_grayscale(&mut image.bytes);
++        Self::upload(
++            device,
++            DecodedLut::from_bgra(image.size, image.bytes),
++            config,
++            mipmapper,
++        )
++    }
++
++    pub fn load(
++        device: &ProtocolObject<dyn MTLDevice>,
++        path: &Path,
++        config: &TextureMeta,
++        mipmapper: &ProtocolObject<dyn MTLBlitCommandEncoder>,
++    ) -> Result<Self> {
++        let image = DecodedLut::from_image(image::open(path)?);
++        Self::upload(device, image, config, mipmapper)
++    }
++
++    fn upload(
++        device: &ProtocolObject<dyn MTLDevice>,
++        image: DecodedLut,
++        config: &TextureMeta,
++        mipmapper: &ProtocolObject<dyn MTLBlitCommandEncoder>,
++    ) -> Result<Self> {
++        let grayscale = !matches!(&image.pixels, LutPixels::Bgra(_));
+         let descriptor = unsafe {
+             let descriptor =
+                 MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+@@ -76,23 +138,46 @@
+             .newTextureWithDescriptor(&descriptor)
+             .ok_or(FilterChainError::FailedToCreateTexture)?;
+ 
+-        unsafe {
++        let bytes_per_row = (if grayscale { 2 } else { 4 }) * image.size.width as usize;
++        let upload = |bytes: &[u8], y: usize, height: usize| unsafe {
+             let region = MTLRegion {
+-                origin: MTLOrigin { x: 0, y: 0, z: 0 },
++                origin: MTLOrigin { x: 0, y, z: 0 },
+                 size: MTLSize {
+                     width: image.size.width as usize,
+-                    height: image.size.height as usize,
++                    height,
+                     depth: 1,
+                 },
+             };
+-
+             texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                 region,
+                 0,
+-                // SAFETY: replaceRegion withBytes is const.
+-                NonNull::new_unchecked(image.bytes.as_slice().as_ptr() as *mut c_void),
+-                (if grayscale { 2 } else { 4 }) * image.size.width as usize,
+-            )
++                // Metal copies the bytes before returning; no CPU image survives upload.
++                NonNull::new_unchecked(bytes.as_ptr() as *mut c_void),
++                bytes_per_row,
++            );
++        };
++        match image.pixels {
++            LutPixels::Luma(bytes) => {
++                // Bounded strips avoid a full RGBA or RG decoded-image allocation.
++                const ROWS_PER_UPLOAD: usize = 64;
++                let width = image.size.width as usize;
++                let mut strip =
++                    vec![0; bytes_per_row * ROWS_PER_UPLOAD.min(image.size.height as usize)];
++                for (index, rows) in bytes.chunks(width * ROWS_PER_UPLOAD).enumerate() {
++                    for (gray, output) in rows.iter().zip(strip.chunks_exact_mut(2)) {
++                        output[0] = *gray;
++                        output[1] = 255;
++                    }
++                    upload(
++                        &strip[..rows.len() * 2],
++                        index * ROWS_PER_UPLOAD,
++                        rows.len() / width,
++                    );
++                }
++            }
++            LutPixels::LumaAlpha(bytes) | LutPixels::Bgra(bytes) => {
++                upload(&bytes, 0, image.size.height as usize);
++            }
+         }
+ 
+         if config.mipmap && texture.mipmapLevelCount() > 1 {
+@@ -126,6 +211,68 @@
+ mod tests {
+     use super::compact_grayscale;
+ 
++    fn as_bgra(image: super::DecodedLut) -> Vec<u8> {
++        match image.pixels {
++            super::LutPixels::Luma(bytes) => bytes
++                .into_iter()
++                .flat_map(|gray| [gray, gray, gray, 255])
++                .collect(),
++            super::LutPixels::LumaAlpha(bytes) => bytes
++                .chunks_exact(2)
++                .flat_map(|p| [p[0], p[0], p[0], p[1]])
++                .collect(),
++            super::LutPixels::Bgra(bytes) => bytes,
++        }
++    }
++
++    #[test]
++    fn png_decode_matches_existing_rgba_conversion_for_all_layouts() {
++        use image::{DynamicImage, ImageBuffer, ImageFormat};
++        use librashader_runtime::image::{PixelFormat, BGRA8};
++        let images = [
++            DynamicImage::ImageLuma8(ImageBuffer::from_raw(2, 1, vec![0, 127]).unwrap()),
++            DynamicImage::ImageLumaA8(ImageBuffer::from_raw(2, 1, vec![32, 0, 128, 199]).unwrap()),
++            DynamicImage::ImageRgb8(
++                ImageBuffer::from_raw(2, 1, vec![7, 8, 9, 10, 10, 10]).unwrap(),
++            ),
++            DynamicImage::ImageRgba8(
++                ImageBuffer::from_raw(2, 1, vec![7, 8, 9, 100, 10, 10, 10, 23]).unwrap(),
++            ),
++            DynamicImage::ImageLuma16(ImageBuffer::from_raw(2, 1, vec![1, 32768]).unwrap()),
++            DynamicImage::ImageLumaA16(
++                ImageBuffer::from_raw(2, 1, vec![32, 0, 32768, 65535]).unwrap(),
++            ),
++            DynamicImage::ImageRgb16(
++                ImageBuffer::from_raw(2, 1, vec![100, 32768, 65535, 1000, 1000, 1000]).unwrap(),
++            ),
++            DynamicImage::ImageRgba16(
++                ImageBuffer::from_raw(2, 1, vec![100, 32768, 65535, 0, 1000, 1000, 1000, 65535])
++                    .unwrap(),
++            ),
++        ];
++        for image in images {
++            let mut encoded = std::io::Cursor::new(Vec::new());
++            image.write_to(&mut encoded, ImageFormat::Png).unwrap();
++            let decoded = image::load_from_memory(encoded.get_ref()).unwrap();
++            let mut expected = decoded.to_rgba8().into_raw();
++            BGRA8::convert(&mut expected);
++            let actual = super::DecodedLut::from_image(decoded);
++            assert_eq!(actual.size, librashader_common::Size::new(2, 1));
++            assert_eq!(as_bgra(actual), expected);
++        }
++    }
++
++    #[test]
++    fn disk_grayscale_retains_compact_decoded_bytes() {
++        let image = image::DynamicImage::ImageLuma8(
++            image::ImageBuffer::from_raw(3, 1, vec![0, 128, 255]).unwrap(),
++        );
++        let decoded = super::DecodedLut::from_image(image);
++        assert!(
++            matches!(decoded.pixels, super::LutPixels::Luma(ref bytes) if bytes == &[0, 128, 255])
++        );
++    }
++
+     #[test]
+     fn grayscale_preserves_color_and_alpha() {
+         let mut bytes = vec![0, 0, 0, 255, 127, 127, 127, 128, 255, 255, 255, 0];

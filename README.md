@@ -38,7 +38,7 @@ rustup toolchain install 1.93.0 --profile minimal
 
 This downloads [Slang 2026.18](https://github.com/shader-slang/slang/releases/tag/v2026.18) and checks its SHA-256 checksum. Slang is installed into `~/Library/Application Support/ScreenSlanger/Tools/slang/2026.18`, with a `current` symlink that ScreenSlanger discovers automatically. The full Slang distribution is needed, including its libraries. Existing installations under `~/slang` are preserved.
 
-The script also builds **librashader 0.12.0-screenslanger.1** from the checksum-verified [upstream 0.12.0 source](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0), with reviewed patches that avoid unused final-pass targets and store grayscale lookup textures more compactly without changing their sampled values. It uses Rust 1.93.0, the upstream `Cargo.lock`, and an optimized Metal-only build. Setup downloads Cargo dependencies and compiles the runtime once, installing it into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1` without replacing an existing official `0.12.0` installation.
+The script also builds **librashader 0.12.0-screenslanger.2** from the checksum-verified [upstream 0.12.0 source](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0), with reviewed patches that avoid unused final-pass targets, store grayscale lookup textures more compactly, and decode and upload Metal textures one at a time. Grayscale uploads use bounded staging memory while preserving sampled values, and color and 16-bit images retain their original conversion behavior. It uses Rust 1.93.0, pinned Cargo dependencies, and an optimized Metal-only build. Setup downloads Cargo dependencies and compiles the runtime once, installing it into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.2` without replacing existing official or previous local runtime installations.
 
 This runtime handles RetroArch presets, including multiple passes, custom vertex stages, reflected uniforms, textures, and filtering. Its compiler is built in, so Homebrew, `glslang`, and `spirv-cross` are not required. The app includes the MPL-2.0 license, original source archive, exact patches, checksums, and rebuild instructions. The vendored C header's origin and the runtime's build and update procedures are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
 
@@ -49,7 +49,7 @@ Run the setup script again after pulling project updates. The Slang and librasha
 | Dependency | Version | Purpose |
 | --- | --- | --- |
 | [Slang](https://github.com/shader-slang/slang/releases/tag/v2026.18) | 2026.18 | Native Slang effects |
-| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.1 | Patched RetroArch Metal rendering runtime |
+| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.2 | Patched RetroArch Metal rendering runtime |
 | [Rust](https://www.rust-lang.org/) | 1.93.0 | Build-time compiler for librashader; not required to run the app |
 
 To inspect installed versions:

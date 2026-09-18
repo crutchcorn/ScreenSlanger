@@ -344,6 +344,44 @@ struct ShaderTests {
         }
     }
 
+    @Test("Grayscale lookup uploads preserve odd widths and rows across upload strips")
+    func grayscaleLookupUploadStrips() async throws {
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let width = 3, height = 67
+        let values = (0..<(width * height)).map { UInt8(($0 * 37) % 256) }
+        let provider = try #require(CGDataProvider(data: Data(values) as CFData))
+        let image = try #require(CGImage(
+            width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+            provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        let png = try #require(CGImageDestinationCreateWithURL(
+            temporary.appendingPathComponent("lookup.png") as CFURL, "public.png" as CFString, 1, nil))
+        CGImageDestinationAddImage(png, image, nil)
+        try #require(CGImageDestinationFinalize(png))
+        try retroArchSource(fragment: "texture(BACKGROUND, vTexCoord)",
+                            fragmentDeclarations: "layout(set = 0, binding = 3) uniform sampler2D BACKGROUND;")
+            .write(to: temporary.appendingPathComponent("sample.slang"), atomically: true, encoding: .utf8)
+        let preset = temporary.appendingPathComponent("sample.slangp")
+        try """
+        shaders = 1
+        shader0 = "sample.slang"
+        textures = "BACKGROUND"
+        BACKGROUND = "lookup.png"
+        BACKGROUND_linear = false
+        """.write(to: preset, atomically: true, encoding: .utf8)
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        try await shared.loadEffect(ShaderLoadRequest(url: preset))
+        let source = try makeTexture(width: width, height: height)
+        let destination = try makeTexture(width: width, height: height)
+        let commands = try #require(shared.commandQueue.makeCommandBuffer())
+        try ShaderRenderCore(resources: shared).encode(
+            commandBuffer: commands, source: source, destination: destination,
+            context: ShaderFrameContext(outputSize: SIMD2(Float(width), Float(height))))
+        try expectPixels(finishRendering(commands, to: destination), expected: values.flatMap { [$0, $0, $0, 255] })
+    }
+
     @Test("Missing preset textures fail without retaining the previous effect")
     func missingPresetTexture() async throws {
         let temporary = try temporaryDirectory()
@@ -366,6 +404,35 @@ struct ShaderTests {
         } catch {
             #expect(shared.effect == nil)
         }
+    }
+
+    @Test("A corrupt lookup texture fails cleanly and can be replaced at the same path")
+    func corruptPresetTextureRecovery() async throws {
+        let temporary = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try fixtureSource("retroarch-background")
+            .write(to: temporary.appendingPathComponent("background.slang"), atomically: true, encoding: .utf8)
+        let texture = temporary.appendingPathComponent("lookup.png")
+        try Data("Invalid PNG content".utf8).write(to: texture)
+        let preset = temporary.appendingPathComponent("corrupt.slangp")
+        try """
+        shaders = 1
+        shader0 = "background.slang"
+        textures = "BACKGROUND"
+        BACKGROUND = "lookup.png"
+        """.write(to: preset, atomically: true, encoding: .utf8)
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        try await shared.loadEffect(ShaderLoadRequest(source: fixtureSource("passthrough")))
+        do {
+            try await shared.loadEffect(ShaderLoadRequest(url: preset))
+            Issue.record("Preset with a corrupt lookup texture unexpectedly loaded")
+        } catch {
+            #expect(shared.effect == nil)
+        }
+        try writeTexture(rgba: solidPixel([255, 0, 0, 255]), to: texture)
+        try await shared.loadEffect(ShaderLoadRequest(url: preset))
+        try expectPixels(render(), expected: solidPixel([0, 0, 255, 255]))
     }
 
     @Test("Native and RetroArch rendering leave excluded desktop areas transparent")

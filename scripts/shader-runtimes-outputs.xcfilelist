@@ -73,5 +73,6 @@ $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/librashader-v0.12.0-source.tar.gz
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0001-skip-unused-final-target.patch
 $(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0002-compact-grayscale-luts.patch
-// Pinned Slang 2026.18 + librashader 0.12.0-screenslanger.1 bundle contents.
+$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/ThirdParty/librashader/0003-stream-metal-lut-loading.patch
+// Pinned Slang 2026.18 + librashader 0.12.0-screenslanger.2 bundle contents.
 // Xcode requires every file and directory explicitly for sandboxed script outputs.

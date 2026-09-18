@@ -11,7 +11,7 @@ set -euo pipefail
 : "${TARGET_TEMP_DIR:?This script is an Xcode build phase.}"
 
 slang_version="2026.18"
-librashader_version="0.12.0-screenslanger.1"
+librashader_version="0.12.0-screenslanger.2"
 tools_directory="$HOME/Library/Application Support/ScreenSlanger/Tools"
 slang_source="$tools_directory/slang/$slang_version"
 librashader_directory="$tools_directory/librashader/$librashader_version"
@@ -51,6 +51,7 @@ cp "$SRCROOT/Vendor/CLibrashader/NOTICE.md" "$notices_destination/librashader/NO
 cp "$SRCROOT/Vendor/CLibrashader/BUILDING.md" "$notices_destination/librashader/BUILDING.md"
 for source_file in librashader-v0.12.0-source.tar.gz \
     0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch \
+    0003-stream-metal-lut-loading.patch \
     BUILD-INFO.txt SHA256SUMS; do
     cp "$librashader_directory/$source_file" "$notices_destination/librashader/$source_file"
 done

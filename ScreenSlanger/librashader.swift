@@ -293,7 +293,7 @@ private final class LibraAPI {
             // Unhosted tests and compiler probes use the pinned development installation.
             paths = [
                 ProcessInfo.processInfo.environment["LIBRASHADER_PATH"],
-                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.1/librashader.dylib").path
+                FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.2/librashader.dylib").path
             ].compactMap { $0 }
         }
         var loaded: UnsafeMutableRawPointer?

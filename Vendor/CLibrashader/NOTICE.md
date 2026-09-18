@@ -1,4 +1,4 @@
-# librashader 0.12.0-screenslanger.1
+# librashader 0.12.0-screenslanger.2
 
 The unmodified `librashader.h` header is from the official [librashader 0.12.0 macOS release](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0). Its MIT copyright and permission notice are preserved in the header.
 
@@ -6,8 +6,9 @@ The runtime is Copyright SnowflakePowered and contributors, licensed under MPL-2
 
 - `0001-skip-unused-final-target.patch` avoids allocating an unused final-pass framebuffer when the shader does not require it for feedback.
 - `0002-compact-grayscale-luts.patch` stores textures whose red, green, and blue bytes are identical as two-channel gray and alpha textures, with Metal component swizzles preserving the original sampled RGBA values. Color textures retain their original format.
+- `0003-stream-metal-lut-loading.patch` decodes and uploads Metal lookup textures sequentially, with bounded staging memory for grayscale uploads. It preserves the public packed-preset format and API, with the original color and 16-bit conversion paths retained.
 
-The corresponding source consists of the [upstream tag librashader-v0.12.0](https://github.com/SnowflakePowered/librashader/tree/librashader-v0.12.0) ([source archive](https://github.com/SnowflakePowered/librashader/archive/refs/tags/librashader-v0.12.0.tar.gz)) plus both patches. Application bundles include that exact archive as `librashader-v0.12.0-source.tar.gz`, both patches, `SHA256SUMS`, `BUILD-INFO.txt`, and reproduction instructions in `BUILDING.md` alongside this notice. The upstream archive's SHA-256 is `4bf8cf2489d00848dcabbf2163204093776082da4217d5a5db45e4cbf335cedf`. A copy of the runtime license is in `LICENSE-MPL-2.0.md`. Keep these files together when redistributing the application.
+The corresponding source consists of the [upstream tag librashader-v0.12.0](https://github.com/SnowflakePowered/librashader/tree/librashader-v0.12.0) ([source archive](https://github.com/SnowflakePowered/librashader/archive/refs/tags/librashader-v0.12.0.tar.gz)) plus all three patches. Application bundles include that exact archive as `librashader-v0.12.0-source.tar.gz`, all three patches, `SHA256SUMS`, `BUILD-INFO.txt`, and reproduction instructions in `BUILDING.md` alongside this notice. The upstream archive's SHA-256 is `4bf8cf2489d00848dcabbf2163204093776082da4217d5a5db45e4cbf335cedf`. A copy of the runtime license is in `LICENSE-MPL-2.0.md`. Keep these files together when redistributing the application.
 
 Application builds give the dynamic library a relocatable Mach-O install name and apply the app publisher's code signature. These packaging changes do not modify the implementation beyond the patches described above.
 

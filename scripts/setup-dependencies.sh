@@ -8,13 +8,13 @@ fi
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 slang_version="2026.18"
-librashader_version="0.12.0-screenslanger.1"
+librashader_version="0.12.0-screenslanger.2"
 librashader_upstream_version="0.12.0"
 librashader_source_sha256="4bf8cf2489d00848dcabbf2163204093776082da4217d5a5db45e4cbf335cedf"
 librashader_rust_version="1.93.0"
-librashader_patches=(0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch)
+librashader_patches=(0001-skip-unused-final-target.patch 0002-compact-grayscale-luts.patch 0003-stream-metal-lut-loading.patch)
 # Reviewed patches against the checksum-pinned source archive, not upstream binaries.
-librashader_patch_sha256=(f5a9c09c0f7a72059eb536fbd63eacbc513bea5fe964e70f3a122ae61bfd90fb 2fd5bd08afabf7f0ee6c8329fcfda778b6460001d7de50145c32af329138fe5e)
+librashader_patch_sha256=(f5a9c09c0f7a72059eb536fbd63eacbc513bea5fe964e70f3a122ae61bfd90fb 2fd5bd08afabf7f0ee6c8329fcfda778b6460001d7de50145c32af329138fe5e 3e3c574a0b8940f04502bece08442ab297bc1b9a7de89dff412b51566de9acfe)
 # Checksums published with the official v2026.18 GitHub release assets.
 # https://github.com/shader-slang/slang/releases/tag/v2026.18
 case "$(uname -m)" in
@@ -72,7 +72,7 @@ fi
 ln -sfn "$slang_version" "$slang_root/current"
 
 # Compile our Metal-only runtime during setup. Normal Xcode builds only copy it.
-# A distinct version preserves the official 0.12.0 installation for comparisons.
+# A distinct version preserves official and previous local runtimes for comparisons.
 librashader_root="$HOME/Library/Application Support/ScreenSlanger/Tools/librashader"
 librashader_directory="$librashader_root/$librashader_version"
 patch_directory="$project_dir/Vendor/CLibrashader/patches"
@@ -88,6 +88,7 @@ Upstream tag: librashader-v$librashader_upstream_version
 Upstream archive SHA-256: $librashader_source_sha256
 Patch 1 SHA-256: ${librashader_patch_sha256[0]}
 Patch 2 SHA-256: ${librashader_patch_sha256[1]}
+Patch 3 SHA-256: ${librashader_patch_sha256[2]}
 Rust toolchain: $librashader_rust_version
 Architecture: $librashader_arch
 MACOSX_DEPLOYMENT_TARGET: 27.0

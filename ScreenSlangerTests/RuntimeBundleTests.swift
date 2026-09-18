@@ -130,7 +130,7 @@ struct RuntimeBundleTests {
         let directory = try builtApplication().appendingPathComponent("Contents/Resources/ThirdParty/librashader")
         let manifest = try String(contentsOf: directory.appendingPathComponent("SHA256SUMS"), encoding: .utf8)
         let files = ["librashader-v0.12.0-source.tar.gz", "0001-skip-unused-final-target.patch",
-                     "0002-compact-grayscale-luts.patch"]
+                     "0002-compact-grayscale-luts.patch", "0003-stream-metal-lut-loading.patch"]
         for file in files {
             let line = try #require(manifest.split(separator: "\n").first { $0.hasSuffix("  " + file) })
             let bytes = try Data(contentsOf: directory.appendingPathComponent(file), options: .mappedIfSafe)
@@ -138,7 +138,7 @@ struct RuntimeBundleTests {
             #expect(actual == String(line.prefix(64)), "Bundled source differs from its build manifest: \(file)")
         }
         let provenance = try String(contentsOf: directory.appendingPathComponent("BUILD-INFO.txt"), encoding: .utf8)
-        #expect(provenance.contains("0.12.0-screenslanger.1"))
+        #expect(provenance.contains("0.12.0-screenslanger.2"))
         for file in ["LICENSE-MPL-2.0.md", "NOTICE.md", "BUILDING.md"] {
             #expect(!(try String(contentsOf: directory.appendingPathComponent(file), encoding: .utf8)).isEmpty)
         }
