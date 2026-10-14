@@ -2,13 +2,14 @@ import AppKit
 import CoreGraphics
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   private var config: Config!
   private var configChanged: Bool = false
   private var metrics: Metrics = Metrics()
   private var errorMessage: ErrorMessage = ErrorMessage()
   private var overlayControllers: [CGDirectDisplayID: OverlayController] = [:]
   private var statusItem: NSStatusItem!
+  private var statusMenu: NSMenu!
   private var configWindowController: ConfigWindowController?
   private var configTimer: Timer?
   private var metricsTimer: Timer?
@@ -219,7 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     appMenu.submenu = appSubMenu
 
     let settingsItem = NSMenuItem(
-      title: "Settings", action: #selector(self.openConfigWindow), keyEquivalent: ",")
+      title: "Settings…", action: #selector(self.openConfigWindow), keyEquivalent: ",")
     settingsItem.target = self
     appSubMenu.addItem(settingsItem)
     
@@ -252,11 +253,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
   private func createMenuBarIcon() {
     self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+    self.statusItem.button?.image = self.getMenuBarIcon()
+    self.statusItem.button?.toolTip = "ScreenSlanger — click to toggle, right-click for options"
+    self.statusItem.button?.target = self
+    self.statusItem.button?.action = #selector(self.statusItemClicked)
+    self.statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+    self.statusItem.button?.setAccessibilityCustomActions([
+      NSAccessibilityCustomAction(
+        name: "Show options", target: self, selector: #selector(self.showStatusMenu))
+    ])
 
-    if let button = self.statusItem.button {
-      button.image = self.getMenuBarIcon()
-      button.action = #selector(self.toggleEffect)
-      button.target = self
+    let menu = NSMenu(title: "ScreenSlanger")
+    let toggleItem = NSMenuItem(
+      title: "Activate", action: #selector(self.toggleEffect), keyEquivalent: "")
+    toggleItem.target = self
+    menu.addItem(toggleItem)
+
+    let reloadItem = NSMenuItem(
+      title: "Reload Shader", action: #selector(self.reloadShader), keyEquivalent: "")
+    reloadItem.target = self
+    menu.addItem(reloadItem)
+    menu.addItem(.separator())
+
+    let settingsItem = NSMenuItem(
+      title: "Settings…", action: #selector(self.openConfigWindow), keyEquivalent: ",")
+    settingsItem.target = self
+    menu.addItem(settingsItem)
+    menu.addItem(.separator())
+
+    let quitItem = NSMenuItem(
+      title: "Quit ScreenSlanger", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    quitItem.target = NSApp
+    menu.addItem(quitItem)
+    self.statusMenu = menu
+  }
+
+  @objc private func statusItemClicked() {
+    guard NSApp.currentEvent?.type == .rightMouseUp else {
+      self.toggleEffect()
+      return
+    }
+    self.showStatusMenu()
+  }
+
+  @objc @discardableResult private func showStatusMenu() -> Bool {
+    guard let button = self.statusItem.button else { return false }
+    let origin = NSPoint(
+      x: button.bounds.minX, y: button.isFlipped ? button.bounds.maxY : button.bounds.minY)
+    button.highlight(true)
+    defer { button.highlight(false) }
+    self.statusMenu.popUp(positioning: nil, at: origin, in: button)
+    return true
+  }
+
+  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    switch menuItem.action {
+    case #selector(self.toggleEffect):
+      menuItem.title = self.config.active ? "Deactivate" : "Activate"
+      return self.config.active || self.config.hasShaderPath()
+    case #selector(self.reloadShader):
+      return self.config.active && self.config.hasShaderPath()
+    default:
+      return true
     }
   }
 
@@ -272,9 +330,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     self.refreshConfig()
   }
 
+  @objc private func reloadShader() {
+    guard self.config.active, self.config.hasShaderPath() else { return }
+    self.refreshConfig(forceReload: true)
+  }
+
   @objc private func openConfigWindow() {
-    if self.configWindowController != nil {
-      self.configWindowController!.window?.makeKeyAndOrderFront(nil)
+    NSApp.activate()
+    if let window = self.configWindowController?.window {
+      if window.isMiniaturized { window.deminiaturize(nil) }
+      window.makeKeyAndOrderFront(nil)
       return
     }
 
@@ -292,7 +357,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
       self?.refreshConfig()
     }
     self.configWindowController!.onReloadShader = { [weak self] in
-      self?.refreshConfig(forceReload: true)
+      self?.reloadShader()
     }
     self.configWindowController!.errorMessage = self.errorMessage
     self.configWindowController!.parameterState = self.getFirstParameterState()

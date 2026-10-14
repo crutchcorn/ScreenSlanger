@@ -99,7 +99,7 @@ class ConfigViewController: NSViewController, NSTextFieldDelegate {
     
     self.reloadButton = NSButton(title: "Reload Shader", target: self, action: #selector(self.reloadShader))
     self.reloadButton.translatesAutoresizingMaskIntoConstraints = false
-    self.reloadButton.isEnabled = self.config.hasShaderPath()
+    self.reloadButton.isEnabled = self.config.active && self.config.hasShaderPath()
     buttonStack.addArrangedSubview(self.reloadButton)
     
     self.stackView.addArrangedSubview(buttonStack)
@@ -238,7 +238,7 @@ class ConfigViewController: NSViewController, NSTextFieldDelegate {
         self.config.shaderPath = path
         self.shaderPathField.stringValue = path
         self.activateButton.isEnabled = true
-        self.reloadButton.isEnabled = true
+        self.reloadButton.isEnabled = self.config.active
         
         self.onConfigUpdate()
       }
@@ -255,6 +255,7 @@ class ConfigViewController: NSViewController, NSTextFieldDelegate {
     self.animateWhenIdleCheckbox.state = self.config.animateWhenIdle ? .on : .off
     self.activateButton.title = self.getActivateButtonTitle()
     self.activateButton.isEnabled = self.config.hasShaderPath()
+    self.reloadButton.isEnabled = self.config.active && self.config.hasShaderPath()
     self.updateMonitorUI()
     self.updateParameterUI()
   }

@@ -36,7 +36,7 @@ Let's start with something easy to spot: the [waves shader](./assets/waves.slang
 
 ScreenSlanger needs that permission to capture the desktop before applying the effect. If capture doesn't start, check **System Settings → Privacy & Security → Screen & System Audio Recording**, enable ScreenSlanger, and try activating it again.
 
-You can keep using your apps while the effect is active. Click **Deactivate** to stop it, or click the paintbrush in the menu bar to toggle it. To return to settings, choose **ScreenSlanger → Settings** or press **⌘,** while the app is active.
+You can keep using your apps while the effect is active. Click the paintbrush in the menu bar to toggle the effect. Right-click it to activate or deactivate the effect, reload the active shader, open **Settings…**, or quit ScreenSlanger. You can also press **⌘,** to open settings while the app is active.
 
 ## Make it your own
 
