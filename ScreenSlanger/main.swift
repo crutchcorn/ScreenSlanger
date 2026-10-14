@@ -2,7 +2,7 @@ import AppKit
 import CoreGraphics
 
 @MainActor
-class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
   private var config: Config!
   private var configChanged: Bool = false
   private var metrics: Metrics = Metrics()
@@ -264,6 +264,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     ])
 
     let menu = NSMenu(title: "ScreenSlanger")
+    menu.delegate = self
     let toggleItem = NSMenuItem(
       title: "Activate", action: #selector(self.toggleEffect), keyEquivalent: "")
     toggleItem.target = self
@@ -289,6 +290,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   }
 
   @objc private func statusItemClicked() {
+    guard self.statusItem.menu == nil else { return }
     guard NSApp.currentEvent?.type == .rightMouseUp else {
       self.toggleEffect()
       return
@@ -297,13 +299,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
   }
 
   @objc @discardableResult private func showStatusMenu() -> Bool {
+    guard self.statusItem.menu == nil else { return true }
     guard let button = self.statusItem.button else { return false }
-    let origin = NSPoint(
-      x: button.bounds.minX, y: button.isFlipped ? button.bounds.maxY : button.bounds.minY)
-    button.highlight(true)
-    defer { button.highlight(false) }
-    self.statusMenu.popUp(positioning: nil, at: origin, in: button)
+    // Let AppKit position the menu below the status item without clipping its first row.
+    self.statusItem.menu = self.statusMenu
+    button.performClick(nil)
     return true
+  }
+
+  func menuDidClose(_ menu: NSMenu) {
+    guard menu === self.statusMenu, self.statusItem.menu === menu else { return }
+    // Restore the immediate left-click toggle after any kind of menu dismissal.
+    self.statusItem.menu = nil
   }
 
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
