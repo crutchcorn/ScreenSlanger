@@ -3,83 +3,61 @@
 <img
   height="240"
   width="240"
-  alt="Screen with a filter applied to it"
+  alt="ScreenSlanger logo: a screen with a visual filter applied"
   src="./assets/logo-1024.png"
 />
 
-<p>Easy to use utility to apply <a href="https://shader-slang.org/"><code>slang</code></a> shaders to your macOS monitors.</p>
+<p>Apply shaders to your Mac's displays.</p>
 
 </div>
 
+Give your desktop an e-ink look, try a retro screen effect, or add a little animated color. ScreenSlanger applies a **shader**—a small program that changes how pixels look—to the displays you choose. That includes your apps, menu bar, and Dock.
 
+You can use [e-ink effects](https://github.com/crutchcorn/eink_slang), [RetroArch shaders and presets](https://github.com/libretro/slang-shaders), or write your own effect starting from the [waves example](./assets/waves.slang).
 
-Useful for applying shaders like [my EINK shader](https://github.com/crutchcorn/eink_slang) or [RetroArch shaders](https://github.com/libretro/slang-shaders) to your monitors in macOS:
+![ScreenSlanger settings with two of three displays selected and controls for an e-ink shader.](./assets/usage.png)
 
-![A settings dialog with a slang file applied to 2 of 3 monitors with different parameters.](./assets/usage.png)
+## Install ScreenSlanger
 
-# Pre-reqs
+The current version requires an **Apple Silicon Mac (M1 or later) running macOS 27 or later**.
 
-- Apple Silicon Mac (M1+) with macOS 27 or later
+An older prerelease is available on the [Releases page](https://github.com/crutchcorn/ScreenSlanger/releases). For the current features described here, follow the [build instructions](./CONTRIBUTING.md#build-and-run).
 
-# Installation
+Once built, you can copy `ScreenSlanger.app` to your Applications folder and open it. The app bundles the tools it needs to run shaders, so you can also share that built app with someone who doesn't have Xcode or Homebrew installed.
 
-Builds from this checkout are self-contained: copy `ScreenSlanger.app` to your Mac and open it. The app includes its Slang compiler, libraries, and RetroArch runtime. Recipients do not need Homebrew, Xcode, or the setup script. Packaged releases are available in the [Releases tab](https://github.com/crutchcorn/ScreenSlanger/releases/latest).
+## Try your first shader
 
-You can share the app alongside a standalone `.slang` file. If an effect uses includes, imports, textures, or a `.slangp` preset, share its whole shader folder so those relative paths remain intact.
+Let's start with something easy to spot: the [waves shader](./assets/waves.slang) adds an animated color tint to your desktop. Save the file to your Mac, then:
 
-# Building from source
+1. Open ScreenSlanger. Its settings window opens with it.
+2. Click **Browse...** and choose the `.slang` file. You can also choose a `.slangp` RetroArch preset.
+3. Under **Displays**, select at least one monitor to filter.
+4. Click **Activate** and allow screen-recording access when macOS asks.
 
-Use Xcode 27 with its Swift 6.4 compiler and macOS 27 SDK. All targets use Swift 6 language mode, including its strict concurrency checks, and require macOS 27 or later. The setup step also requires [rustup](https://rustup.rs/) and Rust 1.93.0 to build the patched Metal runtime. Before the first build, install the pinned build dependencies:
+ScreenSlanger needs that permission to capture the desktop before applying the effect. If capture doesn't start, check **System Settings → Privacy & Security → Screen & System Audio Recording**, enable ScreenSlanger, and try activating it again.
 
-```shell
-rustup toolchain install 1.93.0 --profile minimal
-./scripts/setup-dependencies.sh
-```
+You can keep using your apps while the effect is active. Click **Deactivate** to stop it, or click the paintbrush in the menu bar to toggle it. To return to settings, choose **ScreenSlanger → Settings** or press **⌘,** while the app is active.
 
-This downloads [Slang 2026.18](https://github.com/shader-slang/slang/releases/tag/v2026.18) and checks its SHA-256 checksum. Slang is installed into `~/Library/Application Support/ScreenSlanger/Tools/slang/2026.18`, with a `current` symlink that ScreenSlanger discovers automatically. The full Slang distribution is needed, including its libraries. Existing installations under `~/slang` are preserved.
+## Make it your own
 
-The script also builds **librashader 0.12.0-screenslanger.3** from the checksum-verified [upstream 0.12.0 source](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0), with reviewed patches that avoid unused final-pass targets, store grayscale lookup textures more compactly, and decode and upload Metal textures one at a time. Grayscale uploads use bounded staging memory while preserving sampled values, and color and 16-bit images retain their original conversion behavior. A bundled `librashader-compiler` helper compiles GLSL in a separate, short-lived process so its compiler state is released after loading. Setup uses Rust 1.93.0, pinned Cargo dependencies, and optimized builds. It downloads Cargo dependencies and builds the Metal runtime and helper once, installing both into `~/Library/Application Support/ScreenSlanger/Tools/librashader/0.12.0-screenslanger.3` without replacing existing official or previous local runtime installations.
+One shader applies across all selected displays. You can leave your laptop display unchanged while filtering an external monitor, for example.
 
-This runtime handles RetroArch presets, including multiple passes, custom vertex stages, reflected uniforms, textures, and filtering. The app includes the runtime and compiler helper, so Homebrew, `glslang`, and `spirv-cross` are not required. It also includes the MPL-2.0 license, original source archive, exact patches, checksums, and rebuild instructions. The vendored C header's origin and the runtime's build and update procedures are documented in [CONTRIBUTING.md](./CONTRIBUTING.md).
+When a shader exposes adjustable parameters, they appear under **Shader Parameters**. Change the sliders to tune the effect; ScreenSlanger remembers those values for that shader. The same values apply to every selected display.
 
-Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The **Bundle Shader Runtimes** build phase verifies the installed runtime, copies the pinned tools, licenses, and corresponding source into the app, and signs the nested executables and libraries before Xcode signs the app. Xcode builds never download tools or compile Rust. There are no Swift packages to resolve.
+If you're editing a shader, **Reload Shader** recompiles it, including files referenced by a preset. For native Slang effects, the [waves example](./assets/waves.slang) shows the `shaderFunction(ShaderInput input)` entry point ScreenSlanger expects.
 
-Run the setup script again after pulling project updates. The Slang and librashader versions and checksums are pinned in the script so updates can be reviewed and tested together with the app. The macOS 27 dependency baseline is:
+Keep a downloaded shader's folder together. Presets can depend on other shaders, images, or included files, so moving just the `.slangp` file can break the effect. The same applies when sharing shaders with someone else.
 
-| Dependency | Version | Purpose |
-| --- | --- | --- |
-| [Slang](https://github.com/shader-slang/slang/releases/tag/v2026.18) | 2026.18 | Native Slang effects |
-| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.3 | RetroArch Metal runtime and compiler helper |
-| [Rust](https://www.rust-lang.org/) | 1.93.0 | Build-time compiler for librashader; not required to run the app |
+## Balance motion and power use
 
-To inspect installed versions:
+**Frames per second** limits how often ScreenSlanger captures and draws. It defaults to 60 and accepts values from 1 to 240, capped at each display's refresh rate. Lower values reduce the work needed to keep the effect updated.
 
-```shell
-"$HOME/Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc" -version
-```
+Keep **Animate while desktop is still** enabled for effects like waves that change over time. For a static filter, turn it off: ScreenSlanger can then wait for the desktop to change before drawing again.
 
-Unhosted tests and development probes can override their tools with `SLANG_PATH`, `LIBRASHADER_PATH`, and `LIBRASHADER_COMPILER_PATH`. Without a compiler override, they look for `librashader-compiler` beside the selected librashader runtime. The application always uses its bundled runtime and helper, ignoring those environment overrides. An incomplete app reports an error instead of depending on the recipient's development environment or retaining an in-process GLSL compiler.
+## Build or contribute
 
-Run the native Swift Testing suite after updating the compilers. In Xcode, use **Product → Test** (⌘U), or run:
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for setup, build and test commands, and details about the bundled shader tools.
 
-```shell
-xcodebuild test -project ScreenSlanger.xcodeproj -scheme ScreenSlanger -destination 'platform=macOS'
-```
+## Credits
 
-The tests require a Mac with access to its Metal GPU and the dependencies installed above. They exercise the app's production rendering core, including native Slang and RetroArch pixels, multiple passes, includes, reflected uniforms, texture loading, and reloads. They also check compiler cancellation and deadlines, frame scheduling, metrics, and saved settings. The test bundle runs without launching the app or reading or changing your saved settings. Xcode builds a test-only Swift executable, `ShaderCompilerProbe`, to verify large compiler output, cancellation, and timeouts. Fixtures are bundled, and generated files use temporary directories.
-
-# Usage
-
-Open the app's settings and browse to a `.slang` shader or `.slangp` preset.
-
-To test ScreenSlanger, you can use the [waves shader example](./assets/waves.slang) in our project.
-
-Select a shader and at least one display, then click **Activate**. macOS asks for screen-recording access when capture first starts; if needed, enable ScreenSlanger in **System Settings → Privacy & Security → Screen & System Audio Recording** and try again. Settings remain available if capture fails. **Deactivate** stops capture, and **Reload Shader** recompiles the selected shader, including files referenced by a preset.
-
-The FPS setting caps both capture and drawing. Enable animation on an unchanged desktop for time-dependent effects; static filters can draw only when the captured image changes. Shader compilation runs in the background, so controls stay responsive while an effect loads.
-
-# Credits
-
-[ScreenShader for the original code implementation](https://github.com/branpk/ScreenShader/)
-
-[ShaderGlass for various `shaderp` code references](https://github.com/mausimus/ShaderGlass)
+ScreenSlanger builds on [ScreenShader](https://github.com/branpk/ScreenShader/), with shader preset implementation references from [ShaderGlass](https://github.com/mausimus/ShaderGlass).

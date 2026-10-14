@@ -1,12 +1,47 @@
 # Contributing to ScreenSlanger
 
-Build with Xcode 27 and Swift 6 language mode. Install [rustup](https://rustup.rs/) and the pinned build compiler with `rustup toolchain install 1.93.0 --profile minimal`. Run `scripts/setup-dependencies.sh` once to install the pinned native runtimes, then open `ScreenSlanger.xcodeproj`. Rust is used only during setup to compile librashader; normal Xcode builds and app recipients do not need it. Use the ScreenSlanger scheme and My Mac destination. Run tests with Product → Test (⌘U), or:
+## Build and run
+
+Use Xcode 27 with its Swift 6.4 compiler and macOS 27 SDK. All targets use Swift 6 language mode, including its strict concurrency checks, and require macOS 27 or later.
+
+Install [rustup](https://rustup.rs/), then run these commands from the repository root:
+
+```sh
+rustup toolchain install 1.93.0 --profile minimal
+./scripts/setup-dependencies.sh
+```
+
+Setup downloads the checksum-verified Slang compiler and builds the patched RetroArch runtime. Rust is needed for this setup step; normal Xcode builds and people running the app don't need it.
+
+Open `ScreenSlanger.xcodeproj`, select the **ScreenSlanger** scheme and **My Mac** destination, then build and run. The **Bundle Shader Runtimes** build phase packages the installed tools into the app. It never downloads dependencies or compiles Rust, and there are no Swift packages to resolve. Rerun setup after pulling dependency updates.
+
+The pinned dependencies are:
+
+| Dependency | Version | Purpose |
+| --- | --- | --- |
+| [Slang](https://github.com/shader-slang/slang/releases/tag/v2026.18) | 2026.18 | Native Slang effects |
+| [librashader](https://github.com/SnowflakePowered/librashader/releases/tag/librashader-v0.12.0) | 0.12.0-screenslanger.3 | RetroArch Metal runtime and compiler helper |
+| [Rust](https://www.rust-lang.org/) | 1.93.0 | Builds librashader during setup |
+
+Slang is installed into `~/Library/Application Support/ScreenSlanger/Tools/slang/2026.18`, with a `current` symlink for discovery. Keep the complete distribution, including its libraries. Setup preserves existing installations under `~/slang`. To check the installed compiler version:
+
+```sh
+"$HOME/Library/Application Support/ScreenSlanger/Tools/slang/current/bin/slangc" -version
+```
+
+Unhosted tests and development probes can select a Slang compiler with `SLANG_PATH`. The application always uses its bundled compiler, ignoring that override. RetroArch runtime overrides are described below.
+
+## Run the tests
+
+In Xcode, use **Product → Test** (⌘U), or run:
 
 ```sh
 xcodebuild test -project ScreenSlanger.xcodeproj -scheme ScreenSlanger -destination 'platform=macOS'
 ```
 
-The tests require Metal GPU access. They run without launching the app or changing saved settings. Keep compatibility fixtures small and deterministic, and exercise the production render path when adding a shader regression test.
+The native Swift Testing suite requires Metal GPU access and the dependencies installed above. It exercises the production render path for native Slang and RetroArch shaders, including pixel output, multiple passes, textures, parameters, and reloads. It also checks compiler cancellation and deadlines, metrics, and saved settings.
+
+Tests run without launching the app or reading or changing your saved settings. Fixtures are bundled, and generated files use temporary directories. Xcode builds the test-only `ShaderCompilerProbe` executable to verify large compiler output, cancellation, and timeouts. Keep compatibility fixtures small and deterministic, and exercise the production render path when adding a shader regression test.
 
 ## Vendored CLibrashader provenance
 
@@ -61,7 +96,7 @@ Unhosted tests and probes can override the runtime with `LIBRASHADER_PATH` and t
 
 1. Select an official stable release, record the source tag and archive checksum, and review the locked dependencies and Rust compiler requirements. Check whether upstream has incorporated our patches before rebasing them. Any source, patch, or build recipe change requires a new distinct local runtime version; never overwrite an installed upstream or local version.
 2. Download and verify the official release archive before extracting its C header. Replace the header without editing upstream declarations; retain its copyright and license. Refresh the upstream license and source notice if needed. Update each source patch's checksum in the setup script and this document after review.
-3. Update the pinned runtime path in `ScreenSlanger/librashader.swift`, the installer, the bundling script and input/output file lists, the source rebuilding instructions, and the README together. The output list must enumerate every packaged file and directory, including the corresponding source. Compare C ABI/API versions, struct layouts, ownership rules, and the Metal runtime's thread-safety requirements. Do not guess Swift declarations for C structs or function pointers.
+3. Update the pinned runtime path in `ScreenSlanger/librashader.swift`, the installer, the bundling script and input/output file lists, the source rebuilding instructions, and the dependency table above together. The output list must enumerate every packaged file and directory, including the corresponding source. Compare C ABI/API versions, struct layouts, ownership rules, and the Metal runtime's thread-safety requirements. Do not guess Swift declarations for C structs or function pointers.
 4. Install the new runtime and run the full native test suite, including known-pixel output, multipass presets, reflected parameter layouts, texture filtering, custom vertices, includes, failures, and reloads. Verify app activation, animated effects on a static desktop, parameter editing, display changes, and deactivation on a Metal-capable Mac.
 5. Commit the header, adapter changes, checksums, documentation, and regression fixtures together. Do not add downloaded native binaries or generated caches to Git.
 
