@@ -208,10 +208,6 @@ struct ShaderTests {
                 255, 255, 255, 255, 255, 0, 0, 255,
                 0, 255, 0, 255, 0, 0, 255, 255,
             ])
-            try expectPixels(render(scissor: MTLScissorRect(x: 1, y: 0, width: 1, height: 2)), expected: [
-                0, 0, 0, 0, 255, 0, 0, 255,
-                0, 0, 0, 0, 0, 0, 255, 255,
-            ])
         }
     }
 
@@ -241,10 +237,6 @@ struct ShaderTests {
         try expectPixels(render(), expected: [
             128, 0, 0, 255, 0, 128, 0, 255,
             0, 0, 128, 255, 128, 128, 128, 255,
-        ])
-        try expectPixels(render(scissor: MTLScissorRect(x: 1, y: 0, width: 1, height: 2)), expected: [
-            0, 0, 0, 0, 0, 128, 0, 255,
-            0, 0, 0, 0, 128, 128, 128, 255,
         ])
     }
 
@@ -435,26 +427,10 @@ struct ShaderTests {
         try expectPixels(render(), expected: solidPixel([0, 0, 255, 255]))
     }
 
-    @Test("Native and RetroArch rendering leave excluded desktop areas transparent")
-    func desktopScissorComposition() async throws {
-        let shared = SharedMetalResources.shared
-        defer { shared.clear() }
-        let scissor = MTLScissorRect(x: 1, y: 0, width: 1, height: 2)
-        try await shared.loadEffect(ShaderLoadRequest(source: fixtureSource("passthrough")))
-        let expected: [UInt8] = [
-            0, 0, 0, 0, 0, 255, 0, 255,
-            0, 0, 0, 0, 255, 255, 255, 255,
-        ]
-        try expectPixels(render(scissor: scissor), expected: expected)
-        try await withRetroArchShader(retroArchSource(fragment: "texture(Source, vTexCoord)")) { _ in
-            try expectPixels(render(scissor: scissor), expected: expected)
-        }
-    }
-
-    @Test("RetroArch masks every desktop edge without rescaling pixels or changing their alpha")
-    func desktopMaskEdges() async throws {
+    @Test("Native and RetroArch shaders filter every display edge while preserving pixel alpha")
+    func fullDisplayEdges() async throws {
         // Different colors and alpha across sixteen texels expose UV rescaling,
-        // blending, stale edges, and accidentally clearing visible pixels.
+        // blending, stale edges, and clipping the menu bar or Dock areas.
         var pixels: [UInt8] = []
         for index in 0..<16 {
             pixels.append(UInt8(index * 11))
@@ -462,50 +438,45 @@ struct ShaderTests {
             pixels.append(UInt8(index * 7))
             pixels.append(UInt8(40 + index * 12))
         }
-        let scissors = [
-            MTLScissorRect(x: 0, y: 0, width: 4, height: 4),
-            MTLScissorRect(x: 1, y: 1, width: 2, height: 2),
-            MTLScissorRect(x: 0, y: 1, width: 4, height: 2),
-            MTLScissorRect(x: 1, y: 0, width: 2, height: 4),
-            MTLScissorRect(x: 0, y: 0, width: 1, height: 1),
-            MTLScissorRect(x: 3, y: 3, width: 1, height: 1),
-            MTLScissorRect(x: 2, y: 1, width: 0, height: 2),
-            MTLScissorRect(x: 1, y: 2, width: 2, height: 0),
-        ]
-        try await withRetroArchShader(retroArchSource(fragment: "texture(Source, vTexCoord)")) { shared in
-            let source = try makeTexture(pixels: pixels, width: 4, height: 4)
+        let expected = pixels.enumerated().map { index, value in index % 4 == 3 ? value : 255 - value }
+        let shared = SharedMetalResources.shared
+        defer { shared.clear() }
+        let source = try makeTexture(pixels: pixels, width: 4, height: 4)
+        let destination = try makeTexture(width: 4, height: 4)
+        let context = ShaderFrameContext(outputSize: SIMD2(4, 4))
+        try await shared.loadEffect(ShaderLoadRequest(source: """
+        float4 shaderFunction(ShaderInput input) {
+            float4 color = input.sample(input.texCoord);
+            return float4(1.0 - color.rgb, color.a);
+        }
+        """))
+        let commands = try #require(shared.commandQueue.makeCommandBuffer())
+        try ShaderRenderCore(resources: shared).encode(
+            commandBuffer: commands, source: source, destination: destination, context: context)
+        try expectPixels(finishRendering(commands, to: destination), expected: expected)
+
+        try await withRetroArchShader(retroArchSource(
+            fragment: "vec4(vec3(1.0) - texture(Source, vTexCoord).rgb, texture(Source, vTexCoord).a)"
+        )) { shared in
             let destination = try makeTexture(width: 4, height: 4)
-            let core = ShaderRenderCore(resources: shared)
-            for scissor in scissors {
-                let commands = try #require(shared.commandQueue.makeCommandBuffer())
-                try core.encode(commandBuffer: commands, source: source, destination: destination,
-                                context: ShaderFrameContext(outputSize: SIMD2(4, 4)), scissor: scissor)
-                let expected = (0..<16).flatMap { index -> [UInt8] in
-                    let x = index % 4, y = index / 4
-                    let visible = (scissor.x..<(scissor.x + scissor.width)).contains(x)
-                        && (scissor.y..<(scissor.y + scissor.height)).contains(y)
-                    return visible ? Array(pixels[(index * 4)..<(index * 4 + 4)]) : [0, 0, 0, 0]
-                }
-                try expectPixels(finishRendering(commands, to: destination), expected: expected)
-            }
+            let commands = try #require(shared.commandQueue.makeCommandBuffer())
+            try ShaderRenderCore(resources: shared).encode(
+                commandBuffer: commands, source: source, destination: destination, context: context)
+            try expectPixels(finishRendering(commands, to: destination), expected: expected)
         }
     }
 
-    @Test("Desktop masking leaves complete final-pass feedback available on the next frame")
-    func desktopMaskPreservesFeedback() async throws {
+    @Test("Complete final-pass feedback remains available on the next frame")
+    func finalPassFeedback() async throws {
         let source = retroArchSource(
             fragment: "global.FrameCount == 0u ? texture(Source, vTexCoord) : texture(PassFeedback0, vTexCoord)",
             uniforms: "layout(set = 0, binding = 0) uniform Global { mat4 MVP; uint FrameCount; } global;",
             fragmentDeclarations: "layout(set = 0, binding = 3) uniform sampler2D PassFeedback0;")
-        for scissor in [MTLScissorRect(x: 1, y: 0, width: 1, height: 2),
-                        MTLScissorRect(x: 0, y: 0, width: 0, height: 0)] {
-            try await withRetroArchShader(source) { _ in
-                _ = try render(scissor: scissor)
-                try expectPixels(render(
-                    context: ShaderFrameContext(outputSize: SIMD2(2, 2), frameCount: 1),
-                    scissor: MTLScissorRect(x: 0, y: 0, width: 2, height: 2),
-                    pixels: solidPixel([0, 0, 0, 0])), expected: inputPixels)
-            }
+        try await withRetroArchShader(source) { _ in
+            try expectPixels(render(), expected: inputPixels)
+            try expectPixels(render(
+                context: ShaderFrameContext(outputSize: SIMD2(2, 2), frameCount: 1),
+                pixels: solidPixel([0, 0, 0, 0])), expected: inputPixels)
         }
     }
 
@@ -533,7 +504,7 @@ struct ShaderTests {
         let shared = SharedMetalResources.shared
         defer { shared.clear() }
         try await shared.loadEffect(ShaderLoadRequest(url: preset))
-        _ = try render(scissor: MTLScissorRect(x: 1, y: 0, width: 1, height: 2))
+        try expectPixels(render(), expected: inputPixels)
         try expectPixels(render(
             context: ShaderFrameContext(outputSize: SIMD2(2, 2), frameCount: 1),
             pixels: solidPixel([0, 0, 0, 0])), expected: inputPixels)
@@ -909,7 +880,6 @@ struct ShaderTests {
 
     private func render(
         context: ShaderFrameContext = ShaderFrameContext(outputSize: SIMD2(2, 2)),
-        scissor: MTLScissorRect? = nil,
         displayID: UInt32 = 0,
         pixels: [UInt8]? = nil
     ) throws -> [UInt8] {
@@ -918,7 +888,7 @@ struct ShaderTests {
         let destination = try makeTexture()
         let commands = try #require(shared.commandQueue.makeCommandBuffer())
         try ShaderRenderCore(resources: shared, displayID: displayID).encode(
-            commandBuffer: commands, source: source, destination: destination, context: context, scissor: scissor)
+            commandBuffer: commands, source: source, destination: destination, context: context)
         return try finishRendering(commands, to: destination)
     }
 

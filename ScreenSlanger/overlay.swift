@@ -13,7 +13,6 @@ class OverlayController: NSObject, @MainActor MTKViewDelegate {
   private let initialFrame: NSRect
   private let initialScale: CGFloat
   private let initialMaximumFPS: Int
-  private let initialVisibleFrame: NSRect
   private var screenCapture: ScreenCapture!
   private var renderer: MetalRenderer!
   private let pendingFrame = PendingCaptureFrame()
@@ -30,7 +29,6 @@ class OverlayController: NSObject, @MainActor MTKViewDelegate {
     self.initialFrame = screen.frame
     self.initialScale = screen.backingScaleFactor
     self.initialMaximumFPS = screen.maximumFramesPerSecond
-    self.initialVisibleFrame = screen.visibleFrame
     self.config = config
     self.metrics = metrics
     self.errorMessage = errorMessage
@@ -242,7 +240,7 @@ class OverlayController: NSObject, @MainActor MTKViewDelegate {
 
   func matchesDisplay(_ screen: NSScreen) -> Bool {
     initialFrame == screen.frame && initialScale == screen.backingScaleFactor
-      && initialMaximumFPS == screen.maximumFramesPerSecond && initialVisibleFrame == screen.visibleFrame
+      && initialMaximumFPS == screen.maximumFramesPerSecond
   }
 }
 
