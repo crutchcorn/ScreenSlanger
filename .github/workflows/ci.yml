@@ -1,0 +1,113 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Scripts and workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check shell scripts
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          shellcheck scripts/*.sh
+      - name: Install actionlint
+        env:
+          GOBIN: ${{ runner.temp }}/actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - name: Check workflow syntax and expressions
+        env:
+          ACTIONLINT: ${{ runner.temp }}/actionlint/actionlint
+        run: '"$ACTIONLINT" -color'
+      - name: Check workflow security
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          version: 1.30.1
+          advanced-security: false
+          annotations: true
+          online-audits: false
+
+  macos:
+    name: Build and test (Xcode 27)
+    runs-on: xcode-27
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.0.app/Contents/Developer
+      CARGO_BUILD_JOBS: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Inspect the toolchain
+        id: toolchain
+        run: |
+          xcodebuild -version
+          xcrun swift --version
+          printf 'cache-key=%s-%s-%s\n' \
+            "$(sw_vers -productVersion)" \
+            "$(xcodebuild -version | awk '/Build version/ {print $3}')" \
+            "$(xcrun --sdk macosx --show-sdk-version)" >> "$GITHUB_OUTPUT"
+      - name: Install the Metal compiler component
+        run: xcodebuild -downloadComponent MetalToolchain
+      - name: Restore shader tools
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Application Support/ScreenSlanger/Tools
+          key: shader-tools-${{ runner.os }}-${{ runner.arch }}-${{ steps.toolchain.outputs.cache-key }}-${{ hashFiles('scripts/setup-dependencies.sh', 'Vendor/CLibrashader/**') }}
+      - name: Install the pinned Rust compiler
+        run: rustup toolchain install 1.93.0 --profile minimal
+      - name: Install and verify shader tools
+        # Always verify provenance and checksums, including after a cache hit.
+        run: ./scripts/setup-dependencies.sh
+      - name: Build the Release app
+        run: |
+          set -o pipefail
+          xcodebuild build \
+            -project ScreenSlanger.xcodeproj -scheme ScreenSlanger \
+            -configuration Release -destination 'platform=macOS' \
+            -derivedDataPath "$RUNNER_TEMP/screenslanger-release" \
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= 2>&1 \
+            | tee "$RUNNER_TEMP/screenslanger-release.log"
+      - name: Verify the app and bundled tool signatures
+        run: codesign --verify --deep --strict "$RUNNER_TEMP/screenslanger-release/Build/Products/Release/ScreenSlanger.app"
+      - name: Run tests for the available hardware
+        id: tests
+        run: ./scripts/test.sh --allow-no-metal
+      - name: Upload test results
+        if: ${{ !cancelled() && steps.tests.outputs.results-directory != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: test-results
+          path: |
+            ${{ steps.tests.outputs.results-directory }}/TestResults.xcresult
+            ${{ steps.tests.outputs.results-directory }}/xcodebuild.log
+            ${{ steps.tests.outputs.results-directory }}/metal-probe.log
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+      - name: Upload Release build log
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-build-log
+          path: ${{ runner.temp }}/screenslanger-release.log
+          retention-days: 7
+          if-no-files-found: ignore

@@ -43,6 +43,33 @@ The native Swift Testing suite requires Metal GPU access and the dependencies in
 
 Tests run without launching the app or reading or changing your saved settings. Fixtures are bundled, and generated files use temporary directories. Xcode builds the test-only `ShaderCompilerProbe` executable to verify large compiler output, cancellation, and timeouts. Keep compatibility fixtures small and deterministic, and exercise the production render path when adding a shader regression test.
 
+### Continuous integration
+
+[CI](./.github/workflows/ci.yml) runs on pull requests, pushes to `main`, and manual dispatches. It checks shell scripts with Bash and ShellCheck, validates workflows with actionlint and Zizmor, builds the Release app, verifies its bundled signatures, and runs the native tests. The macOS job uses GitHub's [`xcode-27` preview runner](https://github.com/actions/runner-images/blob/main/images/macos/xcode-27-arm64-Readme.md) with Xcode 27.0 selected explicitly. Builds use ad hoc signing, so CI doesn't need an Apple developer certificate or account credentials.
+
+To run the same test wrapper locally after installing dependencies:
+
+```sh
+./scripts/test.sh
+```
+
+The wrapper requires Metal by default and retains its build log and `TestResults.xcresult` in the temporary directory printed at the end. Each invocation gets its own directory.
+
+Standard hosted runners don't guarantee Metal GPU access. CI calls `./scripts/test.sh --allow-no-metal`: it runs the full suite when a Metal device is available; otherwise it excludes `ShaderTests` and `RuntimeBundleTests/relocatedRetroArchLibrary()`. Compiler, configuration, metrics, and the remaining packaging tests still run. The job emits a warning and records that reduced scope in its summary. A probe failure or a failing test still fails CI. A passing run without Metal does **not** verify shader pixels; run the full suite on a Metal-capable Mac before merging rendering changes.
+
+Shader tools are cached by macOS, architecture, Xcode/SDK, and the installer and vendored source files. Setup still checks provenance and hashes after restoring the cache. The first run builds librashader from source and takes longer. Test results and build logs are retained as workflow artifacts for seven days.
+
+For the script and workflow checks locally, install ShellCheck, actionlint 1.7.12, and Zizmor 1.30.1, then run:
+
+```sh
+for script in scripts/*.sh; do bash -n "$script"; done
+shellcheck scripts/*.sh
+actionlint
+zizmor --offline --strict-collection .github/workflows
+```
+
+Actions are pinned to commit hashes. When updating a pin, verify its upstream release and update its version comment. The actionlint configuration recognizes GitHub's `xcode-27` preview label until it is included in actionlint's built-in runner list.
+
 ## Vendored CLibrashader provenance
 
 `Vendor/CLibrashader` is the C interface for [SnowflakePowered/librashader](https://github.com/SnowflakePowered/librashader), a RetroArch shader preset parser, compiler, and rendering runtime. It is not a new shader implementation written for ScreenSlanger.
